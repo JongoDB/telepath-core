@@ -11,9 +11,8 @@ permissions:
 jobs:
   # One job per OS/arch. Each builds its binary, packages, generates an
   # SBOM, and uploads directly to the GitHub Release for this tag.
-  # No intermediate actions/upload-artifact step — avoids the org's artifact
-  # storage quota entirely, since GitHub Release assets are on a separate
-  # (much larger) bucket.
+  # No intermediate actions/upload-artifact step — GitHub Release assets
+  # live on a separate, much larger bucket than the Actions artifact store.
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ${{ matrix.runner }}
@@ -118,9 +117,8 @@ jobs:
           fail_on_unmatched_files: false
           generate_release_notes: true
 
-  # Aggregation job: download the release assets that the matrix jobs just
-  # pushed, compute SHA256SUMS, sign them with cosign (keyless via OIDC),
-  # and attach SHA256SUMS + sig + cert + install scripts to the release.
+  # Aggregation: download release assets the matrix jobs published,
+  # compute SHA256SUMS, sign with cosign (keyless via OIDC).
   finalize:
     name: finalize (SHA256SUMS + sigstore)
     needs: build
@@ -139,14 +137,10 @@ jobs:
           gh release download "${VERSION}" --repo "${GITHUB_REPOSITORY}" --pattern '*' --clobber
           ls -la
 
-      - name: compute SHA256SUMS (inc. install scripts)
+      - name: compute SHA256SUMS
         shell: bash
         run: |
-          cp scripts/install.sh release/install.sh
-          cp scripts/install.ps1 release/install.ps1
-          chmod +x release/install.sh
           cd release
-          # Sort to keep output stable across runs.
           sha256sum $(ls | sort) > SHA256SUMS
           cat SHA256SUMS
 
@@ -160,13 +154,11 @@ jobs:
             --output-signature SHA256SUMS.sig \
             --output-certificate SHA256SUMS.crt
 
-      - name: attach SHA256SUMS + installers
+      - name: attach SHA256SUMS + signature
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release/SHA256SUMS
             release/SHA256SUMS.sig
             release/SHA256SUMS.crt
-            release/install.sh
-            release/install.ps1
           fail_on_unmatched_files: false

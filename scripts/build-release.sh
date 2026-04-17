@@ -85,19 +85,14 @@ else
     echo "!! nfpm not on PATH; skipping .deb/.rpm build"
 fi
 
-# Copy installers next to the artifacts so they live in the release tree.
-cp "$SCRIPT_DIR/install.sh"  "$DIST/install.sh"
-cp "$SCRIPT_DIR/install.ps1" "$DIST/install.ps1"
-chmod +x "$DIST/install.sh"
-
-# Clean up the per-OS staging directories; the tarballs and installers are
-# what ship. Keep them inside dist/ so test runners can still inspect.
+# Clean up the per-OS staging directories; the tarballs and packages are
+# what ship.
 rm -rf "$DIST/linux-amd64" "$DIST/darwin-arm64" "$DIST/windows-amd64"
 
 # SHA256SUMS. Generate a stable, sorted list.
 cd "$DIST"
 sha256_files=()
-for f in telepath-*.tar.gz telepath-*.zip telepath*.deb telepath*.rpm install.sh install.ps1; do
+for f in telepath-*.tar.gz telepath-*.zip telepath*.deb telepath*.rpm; do
     [[ -f "$f" ]] && sha256_files+=("$f")
 done
 sha256sum "${sha256_files[@]}" | sort > SHA256SUMS

@@ -22,6 +22,7 @@ func main() {
 		Version:       daemon.Version,
 	}
 	root.AddCommand(
+		newInstallCmd(),
 		newDaemonCmd(),
 		newEngagementCmd(),
 		newTransportCmd(),
