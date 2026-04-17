@@ -5,10 +5,15 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write  # needed to upload release assets
-  id-token: write  # needed for cosign keyless signing
+  contents: write  # softprops/action-gh-release needs this
+  id-token: write  # cosign keyless via GitHub OIDC
 
 jobs:
+  # One job per OS/arch. Each builds its binary, packages, generates an
+  # SBOM, and uploads directly to the GitHub Release for this tag.
+  # No intermediate actions/upload-artifact step — avoids the org's artifact
+  # storage quota entirely, since GitHub Release assets are on a separate
+  # (much larger) bucket.
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ${{ matrix.runner }}
@@ -16,36 +21,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Native Linux amd64 — also produces .deb + .rpm via nfpm.
           - runner: ubuntu-latest
             goos: linux
             goarch: amd64
             packages: true
             ext: ""
-
-          # Native macOS runners for darwin. Keeps us honest: if any dep
-          # ever needs CGO + Apple's Security framework, these runners have
-          # the real SDK. Today (zalando/go-keyring shells out to
-          # /usr/bin/security) CGO stays off, but the runner choice is
-          # future-proof.
           - runner: macos-latest
             goos: darwin
             goarch: arm64
             packages: false
             ext: ""
-
-          - runner: macos-13     # intel mac
+          - runner: macos-13
             goos: darwin
             goarch: amd64
             packages: false
             ext: ""
-
           - runner: windows-latest
             goos: windows
             goarch: amd64
             packages: false
             ext: ".exe"
-
           - runner: ubuntu-latest
             goos: linux
             goarch: arm64
@@ -73,7 +68,7 @@ jobs:
             -o "dist/${GOOS}-${GOARCH}/telepath${{ matrix.ext }}" \
             ./cmd/telepath
 
-      - name: tarball / zip
+      - name: archive
         shell: bash
         run: |
           OUTDIR="dist/${GOOS}-${GOARCH}"
@@ -85,6 +80,7 @@ jobs:
 
       - name: install nfpm
         if: matrix.packages
+        shell: bash
         run: |
           curl -sSL -o /tmp/nfpm.tgz "https://github.com/goreleaser/nfpm/releases/download/v2.46.1/nfpm_2.46.1_Linux_x86_64.tar.gz"
           mkdir -p /tmp/nfpm && tar -xzf /tmp/nfpm.tgz -C /tmp/nfpm
@@ -97,63 +93,80 @@ jobs:
           nfpm package --config scripts/nfpm.yaml --packager deb --target ./
           nfpm package --config scripts/nfpm.yaml --packager rpm --target ./
 
-      - name: generate SBOM (syft)
+      - name: install syft
         shell: bash
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b /tmp/syft-bin v1.16.0
-          /tmp/syft-bin/syft "dist/${GOOS}-${GOARCH}/telepath${{ matrix.ext }}" \
-            -o cyclonedx-json \
-            --file "telepath-${VERSION}-${GOOS}-${GOARCH}.sbom.json"
 
-      - name: upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: generate SBOM
+        shell: bash
+        run: |
+          SBOM="telepath-${VERSION}-${GOOS}-${GOARCH}.sbom.json"
+          /tmp/syft-bin/syft "dist/${GOOS}-${GOARCH}/telepath${{ matrix.ext }}" \
+            -o "cyclonedx-json=${SBOM}"
+
+      - name: upload to release
+        uses: softprops/action-gh-release@v2
         with:
-          name: telepath-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
+          files: |
             telepath-*.tar.gz
             telepath-*.zip
             telepath*.deb
             telepath*.rpm
             telepath-*.sbom.json
-          if-no-files-found: ignore
+          fail_on_unmatched_files: false
+          generate_release_notes: true
 
-  release:
-    name: release
+  # Aggregation job: download the release assets that the matrix jobs just
+  # pushed, compute SHA256SUMS, sign them with cosign (keyless via OIDC),
+  # and attach SHA256SUMS + sig + cert + install scripts to the release.
+  finalize:
+    name: finalize (SHA256SUMS + sigstore)
     needs: build
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist-all/
 
-      - name: collect artifacts
+      - name: pull release assets
         shell: bash
         run: |
           mkdir -p release
-          find dist-all -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' -o -name '*.rpm' -o -name '*.sbom.json' \) -exec cp -n {} release/ \;
-          cp scripts/install.sh release/
-          cp scripts/install.ps1 release/
-          chmod +x release/install.sh
-          ( cd release && sha256sum * > SHA256SUMS )
-          ls -la release/
+          cd release
+          gh release download "${VERSION}" --repo "${GITHUB_REPOSITORY}" --pattern '*' --clobber
+          ls -la
 
-      # Sigstore keyless signing. Uses GitHub OIDC — no stored keys. This
-      # produces a .sig and an .crt per artifact that anyone can verify with
-      # the cosign CLI against the public Fulcio/Rekor log.
-      - name: sign artifacts with cosign
-        uses: sigstore/cosign-installer@v3
+      - name: compute SHA256SUMS (inc. install scripts)
+        shell: bash
+        run: |
+          cp scripts/install.sh release/install.sh
+          cp scripts/install.ps1 release/install.ps1
+          chmod +x release/install.sh
+          cd release
+          # Sort to keep output stable across runs.
+          sha256sum $(ls | sort) > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: sigstore/cosign-installer@v3
+
       - name: sign SHA256SUMS
         shell: bash
         run: |
           cd release
-          cosign sign-blob --yes SHA256SUMS --output-signature SHA256SUMS.sig --output-certificate SHA256SUMS.crt
+          cosign sign-blob --yes SHA256SUMS \
+            --output-signature SHA256SUMS.sig \
+            --output-certificate SHA256SUMS.crt
 
-      - name: create GitHub release
+      - name: attach SHA256SUMS + installers
         uses: softprops/action-gh-release@v2
         with:
-          files: release/*
-          generate_release_notes: true
+          files: |
+            release/SHA256SUMS
+            release/SHA256SUMS.sig
+            release/SHA256SUMS.crt
+            release/install.sh
+            release/install.ps1
+          fail_on_unmatched_files: false
