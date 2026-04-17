@@ -1,0 +1,23 @@
+name: telepath
+arch: amd64
+platform: linux
+version: "0.1.0"
+version_schema: semver
+section: utils
+priority: optional
+provides:
+  - telepath
+maintainer: FSC <platform@fsc.example>
+description: |
+  telepath — FSC's assessment harness.
+  A Claude Code plugin plus a local daemon that enforces scope, audits every
+  tool call against an engagement's rules-of-engagement, and produces sealed
+  deliverable bundles at engagement close.
+vendor: FSC
+homepage: https://fsc.example/telepath
+license: Proprietary
+contents:
+  - src: ./dist/linux-amd64/telepath
+    dst: /usr/local/bin/telepath
+    file_info:
+      mode: 0755

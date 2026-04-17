@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (linux race)
+    runs-on: ubuntu-latest
+    env:
+      TELEPATH_KEYSTORE_BACKEND: file
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: vet
+        run: go vet ./...
+      - name: test with race
+        run: go test -race -count=1 ./...
+      - name: build linux binary
+        run: go build -o bin/telepath ./cmd/telepath
+
+  smoke-test:
+    name: smoke-test (end-to-end)
+    runs-on: ubuntu-latest
+    env:
+      TELEPATH_KEYSTORE_BACKEND: file
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build binary
+        run: go build -o bin/telepath ./cmd/telepath
+      - name: run end-to-end smoke test
+        run: bash scripts/smoke-test.sh
+
+  cross-compile:
+    name: cross-compile check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: windows
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -trimpath -o /tmp/telepath ./cmd/telepath
+          file /tmp/telepath
+          ls -la /tmp/telepath

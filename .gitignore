@@ -1,0 +1,21 @@
+# Go build output
+/telepath
+/telepath-core
+/bin/
+/dist/
+/build/
+
+# Test output
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Dev/test state
+/.telepath-dev/
+/tmp/

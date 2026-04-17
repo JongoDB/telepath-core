@@ -1,0 +1,159 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write  # needed to upload release assets
+  id-token: write  # needed for cosign keyless signing
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native Linux amd64 — also produces .deb + .rpm via nfpm.
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            packages: true
+            ext: ""
+
+          # Native macOS runners for darwin. Keeps us honest: if any dep
+          # ever needs CGO + Apple's Security framework, these runners have
+          # the real SDK. Today (zalando/go-keyring shells out to
+          # /usr/bin/security) CGO stays off, but the runner choice is
+          # future-proof.
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            packages: false
+            ext: ""
+
+          - runner: macos-13     # intel mac
+            goos: darwin
+            goarch: amd64
+            packages: false
+            ext: ""
+
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            packages: false
+            ext: ".exe"
+
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            packages: false
+            ext: ""
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      CGO_ENABLED: "0"
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: build binary
+        shell: bash
+        run: |
+          mkdir -p "dist/${GOOS}-${GOARCH}"
+          go build \
+            -trimpath \
+            -ldflags "-s -w -X github.com/fsc/telepath-core/internal/daemon.Version=${VERSION}" \
+            -o "dist/${GOOS}-${GOARCH}/telepath${{ matrix.ext }}" \
+            ./cmd/telepath
+
+      - name: tarball / zip
+        shell: bash
+        run: |
+          OUTDIR="dist/${GOOS}-${GOARCH}"
+          if [ "${GOOS}" = "windows" ]; then
+            ( cd "${OUTDIR}" && 7z a "../../telepath-${VERSION}-${GOOS}-${GOARCH}.zip" "telepath${{ matrix.ext }}" )
+          else
+            tar -czf "telepath-${VERSION}-${GOOS}-${GOARCH}.tar.gz" -C "${OUTDIR}" "telepath${{ matrix.ext }}"
+          fi
+
+      - name: install nfpm
+        if: matrix.packages
+        run: |
+          curl -sSL -o /tmp/nfpm.tgz "https://github.com/goreleaser/nfpm/releases/download/v2.46.1/nfpm_2.46.1_Linux_x86_64.tar.gz"
+          mkdir -p /tmp/nfpm && tar -xzf /tmp/nfpm.tgz -C /tmp/nfpm
+          echo "/tmp/nfpm" >> "$GITHUB_PATH"
+
+      - name: package .deb + .rpm
+        if: matrix.packages
+        shell: bash
+        run: |
+          nfpm package --config scripts/nfpm.yaml --packager deb --target ./
+          nfpm package --config scripts/nfpm.yaml --packager rpm --target ./
+
+      - name: generate SBOM (syft)
+        shell: bash
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /tmp/syft-bin v1.16.0
+          /tmp/syft-bin/syft "dist/${GOOS}-${GOARCH}/telepath${{ matrix.ext }}" \
+            -o cyclonedx-json \
+            --file "telepath-${VERSION}-${GOOS}-${GOARCH}.sbom.json"
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: telepath-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            telepath-*.tar.gz
+            telepath-*.zip
+            telepath*.deb
+            telepath*.rpm
+            telepath-*.sbom.json
+          if-no-files-found: ignore
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-all/
+
+      - name: collect artifacts
+        shell: bash
+        run: |
+          mkdir -p release
+          find dist-all -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' -o -name '*.rpm' -o -name '*.sbom.json' \) -exec cp -n {} release/ \;
+          cp scripts/install.sh release/
+          cp scripts/install.ps1 release/
+          chmod +x release/install.sh
+          ( cd release && sha256sum * > SHA256SUMS )
+          ls -la release/
+
+      # Sigstore keyless signing. Uses GitHub OIDC — no stored keys. This
+      # produces a .sig and an .crt per artifact that anyone can verify with
+      # the cosign CLI against the public Fulcio/Rekor log.
+      - name: sign artifacts with cosign
+        uses: sigstore/cosign-installer@v3
+      - name: sign SHA256SUMS
+        shell: bash
+        run: |
+          cd release
+          cosign sign-blob --yes SHA256SUMS --output-signature SHA256SUMS.sig --output-certificate SHA256SUMS.crt
+
+      - name: create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

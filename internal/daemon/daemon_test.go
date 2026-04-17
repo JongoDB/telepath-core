@@ -1,0 +1,371 @@
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/fsc/telepath-core/internal/engagement"
+	"github.com/fsc/telepath-core/internal/ipc"
+	"github.com/fsc/telepath-core/internal/keys"
+	"github.com/fsc/telepath-core/pkg/schema"
+)
+
+// newTestDaemon spins up a fully wired daemon on a temp dir. Returns the
+// daemon, the engagement Manager, and a cleanup function that drains
+// shutdown.
+func newTestDaemon(t *testing.T) (*Daemon, *engagement.Manager) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := keys.NewFileStore(filepath.Join(dir, "keystore"))
+	if err != nil {
+		t.Fatalf("keystore: %v", err)
+	}
+	sock := filepath.Join(dir, "daemon.sock")
+	d, err := New(Config{
+		RootDir:     dir,
+		SocketPath:  sock,
+		PIDFilePath: filepath.Join(dir, "daemon.pid"),
+		KeyStore:    store,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = d.Shutdown(ctx)
+	})
+	return d, d.Manager()
+}
+
+func TestDaemon_PingOverSocket(t *testing.T) {
+	t.Parallel()
+	d, _ := newTestDaemon(t)
+	res, err := ipc.Call(d.SocketPath(), schema.MethodPing, nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var p schema.PingResult
+	if err := json.Unmarshal(res, &p); err != nil {
+		t.Fatal(err)
+	}
+	if !p.OK || p.Version == "" {
+		t.Errorf("ping result: %+v", p)
+	}
+}
+
+func TestDaemon_EngagementGet_NoActive(t *testing.T) {
+	t.Parallel()
+	d, _ := newTestDaemon(t)
+	res, err := ipc.Call(d.SocketPath(), schema.MethodEngagementGet, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out schema.EngagementGetResult
+	_ = json.Unmarshal(res, &out)
+	if !out.OK {
+		t.Errorf("expected OK=true")
+	}
+	if out.Engagement != nil {
+		t.Errorf("expected nil engagement, got %+v", out.Engagement)
+	}
+}
+
+func TestDaemon_EngagementGet_WithActive(t *testing.T) {
+	t.Parallel()
+	d, mgr := newTestDaemon(t)
+	_, err := mgr.Create(engagement.CreateParams{ID: "d1", ClientName: "C", AssessmentType: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Load("d1"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ipc.Call(d.SocketPath(), schema.MethodEngagementGet, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out schema.EngagementGetResult
+	_ = json.Unmarshal(res, &out)
+	if out.Engagement == nil || out.Engagement.ID != "d1" {
+		t.Errorf("engagement not reflected: %+v", out)
+	}
+}
+
+func TestDaemon_AuditEmit_NoEngagement(t *testing.T) {
+	t.Parallel()
+	d, _ := newTestDaemon(t)
+	params := schema.AuditEmitParams{Type: schema.AuditTypeMCPCall}
+	_, err := ipc.Call(d.SocketPath(), schema.MethodAuditEmit, params)
+	var re *ipc.RemoteError
+	if !errors.As(err, &re) || re.Code != schema.ErrCodeNoActiveEngagement {
+		t.Fatalf("expected NoActiveEngagement, got %v", err)
+	}
+}
+
+func TestDaemon_AuditEmit_IntoActiveLog(t *testing.T) {
+	t.Parallel()
+	d, mgr := newTestDaemon(t)
+	_, err := mgr.Create(engagement.CreateParams{ID: "d2", ClientName: "C", AssessmentType: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Load("d2"); err != nil {
+		t.Fatal(err)
+	}
+	params := schema.AuditEmitParams{
+		Type:    schema.AuditTypeMCPCall,
+		Actor:   schema.ActorClaudeCode,
+		Payload: json.RawMessage(`{"tool":"ssh","cmd":"uname"}`),
+	}
+	res, err := ipc.Call(d.SocketPath(), schema.MethodAuditEmit, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out schema.AuditEmitResult
+	_ = json.Unmarshal(res, &out)
+	if !out.OK {
+		t.Errorf("expected OK")
+	}
+	if out.Sequence == 0 || out.Hash == "" {
+		t.Errorf("missing seq/hash: %+v", out)
+	}
+}
+
+func TestDaemon_Checkpoint(t *testing.T) {
+	t.Parallel()
+	d, mgr := newTestDaemon(t)
+	_, _ = mgr.Create(engagement.CreateParams{ID: "d3", ClientName: "C", AssessmentType: "t"})
+	_, _ = mgr.Load("d3")
+	// Append one event so the checkpoint has something to sign.
+	_, err := ipc.Call(d.SocketPath(), schema.MethodAuditEmit, schema.AuditEmitParams{Type: schema.AuditTypeMCPCall})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ipc.Call(d.SocketPath(), schema.MethodAuditCheckpoint, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out schema.CheckpointResult
+	_ = json.Unmarshal(res, &out)
+	if !out.OK || out.SignedThrough == 0 {
+		t.Errorf("checkpoint result: %+v", out)
+	}
+}
+
+func TestDaemon_SessionSummary(t *testing.T) {
+	t.Parallel()
+	d, mgr := newTestDaemon(t)
+	_, _ = mgr.Create(engagement.CreateParams{ID: "d4", ClientName: "C", AssessmentType: "t"})
+	_, _ = mgr.Load("d4")
+	res, err := ipc.Call(d.SocketPath(), schema.MethodSessionWriteSummary, schema.SessionSummaryParams{
+		Content: "# Today\n\nInterviewed Sarah.\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out schema.SessionSummaryResult
+	_ = json.Unmarshal(res, &out)
+	if !out.OK || !strings.HasSuffix(out.Path, ".md") {
+		t.Errorf("summary result: %+v", out)
+	}
+	// File exists and has content.
+	data, err := os.ReadFile(out.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "Interviewed Sarah") {
+		t.Errorf("summary file content: %q", string(data))
+	}
+}
+
+func TestDaemon_CredentialsRedact(t *testing.T) {
+	t.Parallel()
+	d, _ := newTestDaemon(t)
+	res, err := ipc.Call(d.SocketPath(), schema.MethodCredentialsRedact, schema.CredentialsRedactParams{
+		Text: "my key is AKIAABCDEFGHIJKLMNOP here",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out schema.CredentialsRedactResult
+	_ = json.Unmarshal(res, &out)
+	if !out.OK || strings.Contains(out.Redacted, "AKIA") {
+		t.Errorf("redact result: %+v", out)
+	}
+}
+
+func TestDaemon_UnknownMethod(t *testing.T) {
+	t.Parallel()
+	d, _ := newTestDaemon(t)
+	_, err := ipc.Call(d.SocketPath(), "bogus.method", nil)
+	var re *ipc.RemoteError
+	if !errors.As(err, &re) || re.Code != schema.ErrCodeMethodNotFound {
+		t.Fatalf("expected MethodNotFound, got %v", err)
+	}
+}
+
+func TestDaemon_RefusesSecondStart(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, _ := keys.NewFileStore(filepath.Join(dir, "ks"))
+	d, err := New(Config{
+		RootDir:     dir,
+		SocketPath:  filepath.Join(dir, "s.sock"),
+		PIDFilePath: filepath.Join(dir, "d.pid"),
+		KeyStore:    store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, c := context.WithTimeout(context.Background(), time.Second)
+		defer c()
+		_ = d.Shutdown(ctx)
+	}()
+	if err := d.Start(); err == nil {
+		t.Fatalf("expected second Start to fail")
+	}
+}
+
+func TestDaemon_ShutdownRemovesFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, _ := keys.NewFileStore(filepath.Join(dir, "ks"))
+	sock := filepath.Join(dir, "s.sock")
+	pid := filepath.Join(dir, "d.pid")
+	d, err := New(Config{RootDir: dir, SocketPath: sock, PIDFilePath: pid, KeyStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Start(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := d.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	for _, path := range []string{sock, pid} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("path %s should be gone: err=%v", path, err)
+		}
+	}
+}
+
+func TestDaemon_ScopeCheck_DeniesWithoutROE(t *testing.T) {
+	t.Parallel()
+	d, mgr := newTestDaemon(t)
+	if _, err := mgr.Create(engagement.CreateParams{ID: "sc1", ClientName: "C", AssessmentType: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Load("sc1"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := ipc.Call(d.SocketPath(), schema.MethodScopeCheck, schema.ScopeCheckParams{Target: "anything", Protocol: "ssh"})
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	var out schema.ScopeCheckResult
+	_ = json.Unmarshal(res, &out)
+	if out.InScope {
+		t.Errorf("without ROE loaded, scope.check must deny; got %+v", out)
+	}
+}
+
+func TestDaemon_ScopeCheck_WithROE(t *testing.T) {
+	t.Parallel()
+	d, mgr := newTestDaemon(t)
+	if _, err := mgr.Create(engagement.CreateParams{ID: "sc2", ClientName: "C", AssessmentType: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Load("sc2"); err != nil {
+		t.Fatal(err)
+	}
+	roeYAML := `
+engagement_id: sc2
+version: 1
+in_scope:
+  hosts: ["10.0.0.0/8", "jumphost.acme"]
+allowed_protocols: [ssh, https]
+`
+	_, err := ipc.Call(d.SocketPath(), schema.MethodEngagementSetROE, schema.EngagementSetROEParams{ID: "sc2", YAML: roeYAML})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// In-scope
+	res, _ := ipc.Call(d.SocketPath(), schema.MethodScopeCheck, schema.ScopeCheckParams{Target: "10.1.2.3", Protocol: "ssh"})
+	var out schema.ScopeCheckResult
+	_ = json.Unmarshal(res, &out)
+	if !out.InScope {
+		t.Errorf("expected allow: %+v", out)
+	}
+	// Disallowed protocol
+	res2, _ := ipc.Call(d.SocketPath(), schema.MethodScopeCheck, schema.ScopeCheckParams{Target: "jumphost.acme", Protocol: "rdp"})
+	var out2 schema.ScopeCheckResult
+	_ = json.Unmarshal(res2, &out2)
+	if out2.InScope {
+		t.Errorf("rdp should be denied: %+v", out2)
+	}
+	// Out-of-scope host
+	res3, _ := ipc.Call(d.SocketPath(), schema.MethodScopeCheck, schema.ScopeCheckParams{Target: "8.8.8.8", Protocol: "ssh"})
+	var out3 schema.ScopeCheckResult
+	_ = json.Unmarshal(res3, &out3)
+	if out3.InScope {
+		t.Errorf("8.8.8.8 should be out-of-scope: %+v", out3)
+	}
+}
+
+func TestDaemon_TransportLifecycle(t *testing.T) {
+	t.Parallel()
+	d, _ := newTestDaemon(t)
+
+	// Initially no transport.
+	res, _ := ipc.Call(d.SocketPath(), schema.MethodTransportStatus, nil)
+	var out schema.TransportStatusResult
+	_ = json.Unmarshal(res, &out)
+	if out.Status.State != "down" {
+		t.Errorf("initial state = %s, want down", out.Status.State)
+	}
+
+	// Bring direct up.
+	res2, err := ipc.Call(d.SocketPath(), schema.MethodTransportUp, schema.TransportUpParams{Kind: "direct"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out2 schema.TransportStatusResult
+	_ = json.Unmarshal(res2, &out2)
+	if out2.Status.Kind != "direct" || out2.Status.State != "up" {
+		t.Errorf("up result: %+v", out2.Status)
+	}
+
+	// Bring it back down.
+	res3, err := ipc.Call(d.SocketPath(), schema.MethodTransportDown, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out3 schema.TransportStatusResult
+	_ = json.Unmarshal(res3, &out3)
+	if out3.Status.State != "down" {
+		t.Errorf("down result: %+v", out3.Status)
+	}
+}
+
+// Satisfy imports we want to keep even if compilation trims unused references
+// in future refactors.
+var _ io.Reader = (*os.File)(nil)
+var _ = fmt.Sprintf
