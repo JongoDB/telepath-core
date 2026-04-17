@@ -11,6 +11,22 @@ PID="$ROOT/tp.pid"
 KEYSTORE="$ROOT/ks"
 OUTDIR="$ROOT/export"
 
+# If the plugin repo isn't available (CI, bare checkouts), synthesize a
+# minimal fixture with two rule files so the rules-copy codepath still gets
+# exercised. Keeps the smoke test self-contained.
+if [ ! -d "$PLUGIN/templates/rules" ]; then
+  PLUGIN="$ROOT/fixture-plugin"
+  mkdir -p "$PLUGIN/templates/rules"
+  cat > "$PLUGIN/templates/rules/01-engagement-context.md" <<'RULE'
+# 01 — engagement context (fixture)
+Synthesized by smoke-test when the real plugin repo is not available.
+RULE
+  cat > "$PLUGIN/templates/rules/02-scope-enforcement.md" <<'RULE'
+# 02 — scope enforcement (fixture)
+Synthesized by smoke-test when the real plugin repo is not available.
+RULE
+fi
+
 export TELEPATH_KEYSTORE_BACKEND=file
 export TELEPATH_KEYSTORE_DIR="$KEYSTORE"
 export TELEPATH_SOCKET="$SOCK"
