@@ -115,12 +115,12 @@ jobs:
             telepath*.rpm
             telepath-*.sbom.json
           fail_on_unmatched_files: false
-          generate_release_notes: true
 
-  # Aggregation: download release assets the matrix jobs published,
-  # compute SHA256SUMS, sign with cosign (keyless via OIDC).
+  # Finalize: generate structured release notes from commits (git-cliff),
+  # compute SHA256SUMS, sign with cosign keyless, attach everything + set
+  # the release body from git-cliff output.
   finalize:
-    name: finalize (SHA256SUMS + sigstore)
+    name: finalize (notes + SHA256SUMS + sigstore)
     needs: build
     runs-on: ubuntu-latest
     env:
@@ -128,6 +128,24 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git-cliff needs the full history for tag ranges
+
+      - name: install git-cliff
+        shell: bash
+        run: |
+          VER=2.9.1
+          curl -sSL "https://github.com/orhun/git-cliff/releases/download/v${VER}/git-cliff-${VER}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /tmp
+          sudo mv "/tmp/git-cliff-${VER}/git-cliff" /usr/local/bin/git-cliff
+          git-cliff --version
+
+      - name: generate release notes
+        shell: bash
+        run: |
+          git-cliff --config cliff.toml --latest --strip header --output release-notes.md
+          echo "=== release-notes.md ==="
+          cat release-notes.md
 
       - name: pull release assets
         shell: bash
@@ -154,9 +172,10 @@ jobs:
             --output-signature SHA256SUMS.sig \
             --output-certificate SHA256SUMS.crt
 
-      - name: attach SHA256SUMS + signature
+      - name: attach SHA256SUMS + set release body
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           files: |
             release/SHA256SUMS
             release/SHA256SUMS.sig

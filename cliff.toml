@@ -1,0 +1,79 @@
+# cliff.toml — git-cliff config that produces GitHub Release notes from
+# Conventional Commits. Run via the release workflow's finalize job:
+#
+#   git-cliff --latest --output release-notes.md
+#
+# Output is set as the GitHub Release body.
+
+[changelog]
+# Header: one-time intro, rendered at the top of the release body.
+header = ""
+
+# Body: rendered for each version in range. --latest scopes to one tag.
+body = """
+{% if version -%}
+## {{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## Unreleased
+{% endif -%}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits -%}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | split(pat="\n") | first | trim }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/JongoDB/telepath-core/commit/{{ commit.id }}))
+{% endfor %}
+{%- endfor %}
+
+---
+
+### Verifying this release
+
+Artifacts are hash-listed in `SHA256SUMS` and signed with Sigstore via GitHub
+OIDC (no long-lived keys). Verify:
+
+```sh
+cosign verify-blob SHA256SUMS \\
+  --signature SHA256SUMS.sig \\
+  --certificate SHA256SUMS.crt \\
+  --certificate-identity-regexp 'https://github.com/JongoDB/telepath-core/\\.github/workflows/release\\.yml@refs/tags/.+' \\
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+sha256sum -c SHA256SUMS
+```
+
+CycloneDX SBOMs (`telepath-*.sbom.json`) are attached for every binary.
+"""
+
+# Footer runs once at the end of the whole changelog.
+footer = ""
+trim = true
+
+[git]
+# Conventional Commits: `feat:`, `fix:`, `feat(scope)!:`, etc.
+conventional_commits = true
+# filter_unconventional = false means non-conforming commits still appear
+# under "Other", rather than silently disappearing from the notes.
+filter_unconventional = false
+split_commits = false
+
+commit_parsers = [
+  { message = "^feat(\\(.*\\))?!",    group = "Breaking Changes" },
+  { message = "^feat",                group = "Features" },
+  { message = "^fix",                 group = "Bug Fixes" },
+  { message = "^perf",                group = "Performance" },
+  { message = "^docs",                group = "Documentation" },
+  { message = "^refactor",            group = "Refactoring" },
+  { message = "^test",                group = "Testing" },
+  { message = "^ci|^build",           group = "Build & CI" },
+  { message = "^chore",               group = "Chores" },
+  { message = "^security",            group = "Security" },
+  { message = "^revert",              group = "Reverts" },
+  { message = ".*",                   group = "Other" },
+]
+
+filter_commits = false
+tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
+skip_tags = ""
+ignore_tags = ""
+topo_order = false
+sort_commits = "oldest"
