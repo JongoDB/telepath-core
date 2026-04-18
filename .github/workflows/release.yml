@@ -49,7 +49,9 @@ jobs:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
       CGO_ENABLED: "0"
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ github.ref_name }}       # e.g. v0.1.1
+      # Strip the leading `v` so binaries report "0.1.0" not "v0.1.0".
+      # GOFLAGS lets every go-build invocation pick up the cleaned value.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -60,10 +62,12 @@ jobs:
       - name: build binary
         shell: bash
         run: |
+          # Strip the leading v so runtime -version reports semver (0.1.1) not the tag (v0.1.1).
+          SEMVER="${VERSION#v}"
           mkdir -p "dist/${GOOS}-${GOARCH}"
           go build \
             -trimpath \
-            -ldflags "-s -w -X github.com/fsc/telepath-core/internal/daemon.Version=${VERSION}" \
+            -ldflags "-s -w -X github.com/fsc/telepath-core/internal/daemon.Version=${SEMVER}" \
             -o "dist/${GOOS}-${GOARCH}/telepath${{ matrix.ext }}" \
             ./cmd/telepath
 
@@ -121,7 +125,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ github.ref_name }}
+      VERSION: ${{ github.ref_name }}       # e.g. v0.1.1
+      # Strip the leading `v` so binaries report "0.1.0" not "v0.1.0".
+      # GOFLAGS lets every go-build invocation pick up the cleaned value.
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
