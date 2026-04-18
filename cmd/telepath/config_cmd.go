@@ -179,16 +179,20 @@ func runConfigInitTUI(out io.Writer) error {
 				).
 				Value(&method),
 		),
+		// Token input shows ONLY for api-key. oauth-token drops out of the
+		// TUI after Save and hands off to `claude setup-token` (interactive
+		// subprocess — matches `claude code cli` auth UX). subscription-
+		// oauth runs the PKCE flow. Hiding the field for both methods
+		// avoids a misleading "paste a token here" prompt for flows where
+		// the token comes from a handoff, not paste-in.
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Token / API key (input hidden)").
-				Description("For OAuth token: paste from `claude setup-token`. For API key: your Anthropic key. Leave empty to skip and capture later with `telepath config set`.").
+				Title("ANTHROPIC_API_KEY (input hidden)").
+				Description("Your FSC API-account key. Leave empty to skip and capture later with `telepath config set`.").
 				EchoMode(huh.EchoModePassword).
 				Value(&token),
 		).WithHideFunc(func() bool {
-			// Subscription OAuth runs a PKCE flow that captures the token
-			// itself in a later step (v0.2); v0.1 just records the choice.
-			return method == config.AuthMethodSubscriptionOAuth
+			return method != config.AuthMethodAPIKey
 		}),
 		// Confirmation step. The operator can Shift+Tab back through the
 		// groups to review/change values before saying "Save".
@@ -222,27 +226,41 @@ func runConfigInitTUI(out io.Writer) error {
 		return err
 	}
 
-	if token != "" && method != config.AuthMethodSubscriptionOAuth {
-		store, err := keys.Open()
-		if err != nil {
-			return fmt.Errorf("keystore: %w", err)
-		}
-		slot := config.KeystoreSlotForMethod(method)
-		if err := store.Set(slot, []byte(strings.TrimSpace(token))); err != nil {
-			return err
-		}
-		fmt.Fprintf(out, "Stored %s in keystore (backend=%s).\n", slot, store.Backend())
+	// After the TUI form ends, each auth method takes its method-specific
+	// capture path. The TUI form is OVER by this point (huh has returned);
+	// terminal is back to normal so subprocess handoffs work cleanly.
+	store, err := keys.Open()
+	if err != nil {
+		return fmt.Errorf("keystore: %w", err)
 	}
 
-	// After the TUI form ends, subscription-oauth kicks off the PKCE
-	// handoff: print the authorize URL, read back the callback-displayed
-	// code, exchange for access + refresh tokens. Runs in plain stdin
-	// mode (huh's form is over; the URL paste-back is a simple prompt).
-	if method == config.AuthMethodSubscriptionOAuth {
-		store, err := keys.Open()
-		if err != nil {
-			return fmt.Errorf("keystore: %w", err)
+	switch method {
+	case config.AuthMethodAPIKey:
+		// API key: came from the TUI input field. Store if non-empty.
+		if token != "" {
+			if err := store.Set(config.KeystoreClaudeAPIKey, []byte(strings.TrimSpace(token))); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "Stored ANTHROPIC_API_KEY in keystore (backend=%s).\n", store.Backend())
+		} else {
+			fmt.Fprintln(out, "No API key captured; set later with `telepath config set` or the keystore tool of your choice.")
 		}
+	case config.AuthMethodOAuthToken:
+		// oauth-token: drop out of the TUI and run `claude setup-token`
+		// under the hood. Claude's own CLI takes over the terminal, shows
+		// the URL, completes the browser handoff, and prints the token —
+		// identical UX to running `claude setup-token` directly. We then
+		// prompt the operator to paste the token back.
+		reader := bufio.NewReader(os.Stdin)
+		capturedToken, err := captureClaudeOAuthToken(reader, out, out, configInitOpts{interactive: true}, true)
+		if err != nil {
+			return err
+		}
+		if err := store.Set(config.KeystoreClaudeOAuthToken, []byte(capturedToken)); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Stored CLAUDE_CODE_OAUTH_TOKEN in keystore (backend=%s).\n", store.Backend())
+	case config.AuthMethodSubscriptionOAuth:
 		reader := bufio.NewReader(os.Stdin)
 		if err := runClaudeSubscriptionOAuth(reader, out, store, true); err != nil {
 			return err
@@ -386,24 +404,40 @@ func runClaudeSubscriptionOAuth(reader *bufio.Reader, out io.Writer, store keys.
 	return nil
 }
 
-// captureClaudeOAuthToken either offers to shell out to `claude
-// setup-token` (only when interactive — scripts + CI never spawn an
-// interactive subprocess) or simply prompts the operator to paste the
-// token.
+// captureClaudeOAuthToken delegates to Claude Code's own `claude
+// setup-token` flow when available. claude takes over the terminal,
+// prints an auth URL, waits for the browser handoff, and emits the
+// one-year OAuth token on stdout — same UX as running
+// `claude setup-token` directly on the CLI. We then prompt the
+// operator to paste the token back into telepath.
+//
+// When claude is NOT on PATH, we point the operator at the one-liner
+// to install it. They re-run `telepath config init` once it's
+// available. Automation (non-interactive) skips the subprocess
+// entirely and requires the token on stdin.
 func captureClaudeOAuthToken(r *bufio.Reader, out, errOut io.Writer, opts configInitOpts, echoNewline bool) (string, error) {
 	if opts.interactive {
-		if _, err := exec.LookPath("claude"); err == nil {
-			choice := strings.ToLower(strings.TrimSpace(prompt(r, out, "Run `claude setup-token` for you? [Y/n]", "y", echoNewline)))
-			if choice == "" || choice == "y" || choice == "yes" {
-				cmd := exec.Command("claude", "setup-token")
-				cmd.Stdin = os.Stdin
-				cmd.Stdout = out
-				cmd.Stderr = errOut
-				if err := cmd.Run(); err != nil {
-					return "", fmt.Errorf("claude setup-token: %w", err)
-				}
-				fmt.Fprintln(out, "(paste the token below)")
+		if _, err := exec.LookPath("claude"); err != nil {
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, "Claude Code (the `claude` CLI) isn't on your PATH. Install it first, then re-run:")
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, "  curl -fsSL https://claude.ai/install.sh | bash")
+			fmt.Fprintln(out, "  telepath config init")
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, "Or paste an existing CLAUDE_CODE_OAUTH_TOKEN below to skip the handoff.")
+		} else {
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, "Launching `claude setup-token` — sign in when the browser opens, and claude will print your token when done.")
+			fmt.Fprintln(out)
+			cmd := exec.Command("claude", "setup-token")
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = out
+			cmd.Stderr = errOut
+			if err := cmd.Run(); err != nil {
+				return "", fmt.Errorf("claude setup-token: %w", err)
 			}
+			fmt.Fprintln(out)
+			fmt.Fprintln(out, "Paste the token claude just printed into the prompt below.")
 		}
 	}
 	token := strings.TrimSpace(prompt(r, out, "CLAUDE_CODE_OAUTH_TOKEN", "", echoNewline))
