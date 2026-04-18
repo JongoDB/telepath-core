@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -20,6 +21,18 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		Version:       daemon.Version,
+		// Root invocation with no subcommand: if the binary is running
+		// from outside PATH (freshly-extracted tarball), lead with a
+		// "Next step" banner so users don't hit `telepath install` →
+		// "command not found" by forgetting the leading ./. After
+		// `telepath install`, the binary IS on PATH and the banner
+		// suppresses itself — the help-only output remains.
+		Run: func(cmd *cobra.Command, args []string) {
+			if !runningFromPATH() {
+				fmt.Fprintln(cmd.OutOrStdout(), freshExtractBanner())
+			}
+			_ = cmd.Help()
+		},
 	}
 	// Cobra groups organize `telepath --help` output into three
 	// functional buckets so new operators see the setup commands at the
@@ -54,4 +67,51 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// runningFromPATH reports whether the executing binary lives in a
+// directory that appears on $PATH. A tarball extraction to $HOME returns
+// false and triggers the getting-started banner; a post-`install`
+// invocation returns true and skips it.
+func runningFromPATH() bool {
+	self, err := os.Executable()
+	if err != nil {
+		// Fail-open: don't nag users in weird embedded environments.
+		return true
+	}
+	if resolved, err := filepath.EvalSymlinks(self); err == nil {
+		self = resolved
+	}
+	selfAbs, err := filepath.Abs(self)
+	if err != nil {
+		return true
+	}
+	name := filepath.Base(self)
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, name)
+		if candAbs, err := filepath.Abs(candidate); err == nil && candAbs == selfAbs {
+			return true
+		}
+	}
+	return false
+}
+
+// freshExtractBanner is the preamble printed before cobra's help when
+// telepath is run with no subcommand and the binary isn't on PATH yet.
+func freshExtractBanner() string {
+	return `Looks like you've extracted telepath but haven't installed it yet.
+
+Next step:
+
+  ./telepath install
+
+That copies the binary to ~/.local/bin (or %LOCALAPPDATA%\telepath\bin on
+Windows) and prints the PATH-setup line for your shell. After that, plain
+` + "`telepath`" + ` works from any directory.
+
+Full command reference below:
+`
 }
