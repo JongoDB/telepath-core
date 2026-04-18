@@ -116,6 +116,15 @@ func runUninstall(out io.Writer, in io.Reader, purge, yes bool) error {
 	if !purge {
 		fmt.Fprintln(out, "(state preserved; re-run with --purge to remove ~/.telepath and keystore entries.)")
 	}
+	// Bash / zsh cache command paths; the current shell still thinks
+	// `telepath` lives where we just removed it. Point operators at the
+	// fix so the next command isn't "command not found".
+	if runtime.GOOS != "windows" {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Your current shell has the old `telepath` path cached. Clear it with:")
+		fmt.Fprintln(out, "  hash -r")
+		fmt.Fprintln(out, "Or open a new shell.")
+	}
 	return nil
 }
 
@@ -162,27 +171,32 @@ func inspectStateDir(statePath string) (string, bool) {
 
 // purgeState deletes ~/.telepath and any telepath-* entries in the OS
 // keychain (best-effort; keys not owned by us stay).
+//
+// IMPORTANT ordering: probe the keystore backend BEFORE removing the state
+// directory. The file backend's Open() runs os.MkdirAll(~/.telepath), so
+// calling Open() after RemoveAll silently re-creates the directory we just
+// nuked — surfaced as the v0.1.2 "purge leaves empty ~/.telepath" bug.
+// Probe → OS-keychain purge if applicable → RemoveAll wipes both the
+// state tree and the file-backend keystore as a single step.
 func purgeState(out io.Writer, stateDir string) error {
-	// For engagement keys we need to know the IDs — read them from the
-	// engagements dir BEFORE we nuke it.
 	engs := listEngagementIDs(stateDir)
+
+	backend := ""
+	if store, err := keys.Open(); err == nil {
+		backend = store.Backend()
+		if backend == "os" {
+			keys.PurgeTelepathEntries(out, store, engs)
+		}
+	} else {
+		fmt.Fprintf(out, "warning: keystore unreachable for cleanup: %v\n", err)
+	}
 
 	if err := os.RemoveAll(stateDir); err != nil {
 		return fmt.Errorf("remove %s: %w", stateDir, err)
 	}
 	fmt.Fprintf(out, "removed %s\n", stateDir)
-
-	// Keystore cleanup: only the OS-keychain backend needs explicit
-	// deletion. The file backend lives under ~/.telepath which we just
-	// removed.
-	if store, err := keys.Open(); err == nil {
-		n := keys.PurgeTelepathEntries(out, store, engs)
-		if n == 0 && store.Backend() == "file" {
-			// File backend: already wiped by the ~/.telepath removal.
-			fmt.Fprintln(out, "(file keystore removed alongside ~/.telepath)")
-		}
-	} else {
-		fmt.Fprintf(out, "warning: keystore unreachable for cleanup: %v\n", err)
+	if backend == "file" {
+		fmt.Fprintln(out, "(file keystore removed alongside ~/.telepath)")
 	}
 	return nil
 }
