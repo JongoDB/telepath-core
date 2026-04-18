@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 
 	"github.com/spf13/cobra"
@@ -12,6 +13,34 @@ import (
 	"github.com/fsc/telepath-core/internal/keys"
 	"github.com/fsc/telepath-core/pkg/schema"
 )
+
+// ANSI color codes for doctor output. Skipped when stdout is not a TTY
+// (pipes, redirects, CI logs) so captures stay plain-text.
+var (
+	colorReset  = ""
+	colorGreen  = ""
+	colorYellow = ""
+	colorRed    = ""
+)
+
+func init() {
+	// Colors on when stdout is a char device and NO_COLOR isn't set.
+	// Convention from https://no-color.org/.
+	if _, noColor := os.LookupEnv("NO_COLOR"); noColor {
+		return
+	}
+	fi, err := os.Stdout.Stat()
+	if err != nil {
+		return
+	}
+	if fi.Mode()&os.ModeCharDevice == 0 {
+		return
+	}
+	colorReset = "\x1b[0m"
+	colorGreen = "\x1b[32m"
+	colorYellow = "\x1b[33m"
+	colorRed = "\x1b[31m"
+}
 
 func newDoctorCmd() *cobra.Command {
 	return &cobra.Command{
@@ -32,13 +61,13 @@ func newDoctorCmd() *cobra.Command {
 }
 
 func ok(cmd *cobra.Command, label, detail string) {
-	fmt.Fprintf(cmd.OutOrStdout(), "[ OK ] %-20s %s\n", label, detail)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s[ OK ]%s %-20s %s\n", colorGreen, colorReset, label, detail)
 }
 func warn(cmd *cobra.Command, label, detail string) {
-	fmt.Fprintf(cmd.OutOrStdout(), "[WARN] %-20s %s\n", label, detail)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s[WARN]%s %-20s %s\n", colorYellow, colorReset, label, detail)
 }
 func fail(cmd *cobra.Command, label, detail string) {
-	fmt.Fprintf(cmd.OutOrStdout(), "[FAIL] %-20s %s\n", label, detail)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s[FAIL]%s %-20s %s\n", colorRed, colorReset, label, detail)
 }
 
 func checkKeystore(cmd *cobra.Command) {
