@@ -198,6 +198,14 @@ echo ">> 13. Evidence search"
 json_rpc "evidence.search" '{"tag":"interview"}' >"$ROOT/es.out"
 check "evidence found by tag" grep -q '"items":\[' "$ROOT/es.out"
 
+echo ">> 13b. Evidence tag (merge + dedup)"
+EV_ID=$(python3 -c "import json,sys; d=json.load(open('$ROOT/es.out')); sys.stdout.write(d['result']['items'][0]['evidence_id'])" 2>/dev/null)
+json_rpc "evidence.tag" "$(printf '{"evidence_id":"%s","tags":["critical","interview"]}' "$EV_ID")" >"$ROOT/et.out"
+check "tag merged (contains critical)" grep -q '"critical"' "$ROOT/et.out"
+check "tag dedup preserved interview" grep -q '"interview"' "$ROOT/et.out"
+json_rpc "evidence.search" '{"tag":"critical"}' >"$ROOT/es2.out"
+check "search by new tag returns item" bash -c "grep -q '\"evidence_id\":\"$EV_ID\"' '$ROOT/es2.out'"
+
 echo ">> 14. List findings"
 json_rpc "findings.list" '{}' >"$ROOT/fl.out"
 check "findings.list returns record" grep -q '"title":"CS inbox churn"' "$ROOT/fl.out"
