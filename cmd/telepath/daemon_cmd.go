@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -20,7 +19,9 @@ import (
 )
 
 // defaultDaemonLogPath returns ~/.telepath/logs/daemon.log, the canonical
-// location for detached-daemon output. Also used by `daemon logs`.
+// location for detached-daemon output. The operator tails it with
+// `tail -f` when they want to watch; telepath itself no longer wraps
+// that.
 func defaultDaemonLogPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -34,7 +35,7 @@ func newDaemonCmd() *cobra.Command {
 		Use:   "daemon",
 		Short: "Control the telepath daemon",
 	}
-	c.AddCommand(newDaemonRunCmd(), newDaemonStatusCmd(), newDaemonStopCmd(), newDaemonLogsCmd())
+	c.AddCommand(newDaemonRunCmd(), newDaemonStatusCmd(), newDaemonStopCmd())
 	return c
 }
 
@@ -131,103 +132,6 @@ func detachAndExit(cmd *cobra.Command, socketFlag, rootFlag, pidFlag, logFlag st
 	// session until the daemon shuts down (SIGTERM from `telepath daemon
 	// stop` or system shutdown).
 	return nil
-}
-
-func newDaemonLogsCmd() *cobra.Command {
-	var follow bool
-	var logFlag string
-	var lines int
-	c := &cobra.Command{
-		Use:   "logs",
-		Short: "Show the detached daemon log",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if logFlag == "" {
-				logFlag = defaultDaemonLogPath()
-			}
-			if _, err := os.Stat(logFlag); os.IsNotExist(err) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "no daemon log at %s yet\n", logFlag)
-				return nil
-			}
-			if follow {
-				return tailFollow(cmd, logFlag)
-			}
-			return tailLastN(cmd, logFlag, lines)
-		},
-	}
-	c.Flags().BoolVarP(&follow, "follow", "f", false, "follow log output (like tail -f)")
-	c.Flags().IntVarP(&lines, "lines", "n", 50, "number of lines to show (ignored with -f)")
-	c.Flags().StringVar(&logFlag, "log-file", "", "override log-file path")
-	return c
-}
-
-// tailLastN prints the last n lines of path, like `tail -n N`.
-func tailLastN(cmd *cobra.Command, path string, n int) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("daemon logs: read: %w", err)
-	}
-	lines := splitLines(string(data))
-	if n > 0 && len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	for _, l := range lines {
-		fmt.Fprintln(cmd.OutOrStdout(), l)
-	}
-	return nil
-}
-
-// tailFollow streams new content as it's appended. Simple poller — good
-// enough for daemon logs that write on the order of events per second.
-func tailFollow(cmd *cobra.Command, path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("daemon logs: open: %w", err)
-	}
-	defer f.Close()
-	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		return err
-	}
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-
-	buf := make([]byte, 4096)
-	for {
-		select {
-		case <-sigCh:
-			return nil
-		default:
-		}
-		n, err := f.Read(buf)
-		if n > 0 {
-			_, _ = cmd.OutOrStdout().Write(buf[:n])
-		}
-		if err == io.EOF {
-			time.Sleep(200 * time.Millisecond)
-			continue
-		}
-		if err != nil {
-			return err
-		}
-	}
-}
-
-// splitLines splits s on \n without dropping the trailing empty string.
-func splitLines(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var out []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			out = append(out, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		out = append(out, s[start:])
-	}
-	return out
 }
 
 // pidFilePath resolves the active PID file path in precedence order:

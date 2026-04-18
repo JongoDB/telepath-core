@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -155,24 +154,20 @@ func newEngagementUnloadCmd() *cobra.Command {
 func newEngagementListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List engagements on this host",
+		Short: "List engagements on this host (tab-separated)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var res schema.EngagementListResult
 			if err := rpc(schema.MethodEngagementList, nil, &res); err != nil {
 				return err
 			}
-			if len(res.Engagements) == 0 {
-				fmt.Println("no engagements")
-				return nil
-			}
-			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tCLIENT\tTYPE\tSTATUS\tCREATED")
+			// Tab-separated, one engagement per line. Trivial to pipe into
+			// awk/cut; the GUI does its own pretty rendering off the raw RPC.
 			for _, e := range res.Engagements {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\n",
 					e.ID, e.ClientName, e.AssessmentType, e.Status, e.CreatedAt.Format("2006-01-02"))
 			}
-			return w.Flush()
+			return nil
 		},
 	}
 }
@@ -188,20 +183,11 @@ func newEngagementStatusCmd() *cobra.Command {
 				return err
 			}
 			if res.Engagement == nil {
-				fmt.Println("no active engagement")
+				fmt.Fprintln(cmd.OutOrStdout(), "no active engagement")
 				return nil
 			}
 			e := res.Engagement
-			fmt.Printf("active: %s\n", e.ID)
-			fmt.Printf("  client:     %s\n", e.ClientName)
-			fmt.Printf("  assessment: %s\n", e.AssessmentType)
-			fmt.Printf("  status:     %s\n", e.Status)
-			if !e.StartDate.IsZero() {
-				fmt.Printf("  start:      %s\n", e.StartDate.Format("2006-01-02"))
-			}
-			if !e.EndDate.IsZero() {
-				fmt.Printf("  end:        %s\n", e.EndDate.Format("2006-01-02"))
-			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\n", e.ID, e.ClientName, e.AssessmentType, e.Status)
 			return nil
 		},
 	}

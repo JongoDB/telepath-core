@@ -170,6 +170,17 @@ documented in `../telepath-v2/docs/ARCHITECTURE.md`.
 - **Hook protocol method names are a contract** with the plugin's Python
   hook lib (`hooks/telepath_hook_lib.py`). Rename → break the plugin. Add
   new methods instead.
+- **CLI surface is split into permanent vs. scaffolding.** The permanent
+  ones — `install`, `uninstall`, `update`, `config`, `doctor`, `daemon`,
+  `claude`, `verify-config`, `mcp-adapter` — are setup/config or terminal-
+  native and survive the v0.4 GUI. The scaffolding ones — `engagement`,
+  `transport`, and any future `findings`/`notes`/`evidence` — are thin
+  RPC wrappers kept alive only until the GUI renders the same state. Do
+  NOT invest in pretty output (tabwriter, multi-line blocks, color,
+  spinners, confirmation prompts) for scaffolding commands — the GUI
+  will replace them and we don't want two polished UIs to maintain.
+  Plain tab-separated lines, one-line summaries, and direct
+  `fmt.Fprintf`s are the right shape.
 
 ## Memory pointers (for Claude)
 
