@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -77,6 +78,8 @@ func (d *Daemon) dispatch(ctx context.Context, req *schema.JSONRPCRequest) (json
 		return d.handleFilesGet(req)
 	case schema.MethodEvidenceSearch:
 		return d.handleEvidenceSearch(req)
+	case schema.MethodEvidenceTag:
+		return d.handleEvidenceTag(req)
 	case schema.MethodFindingsCreate:
 		return d.handleFindingsCreate(req)
 	case schema.MethodFindingsUpdate:
@@ -698,6 +701,31 @@ func (d *Daemon) handleEvidenceSearch(req *schema.JSONRPCRequest) (json.RawMessa
 		})
 	}
 	return encodeResult(schema.EvidenceSearchResult{OK: true, Items: items})
+}
+
+// handleEvidenceTag merges tags into an existing evidence item's metadata.
+// The ciphertext is never touched — only the side-car .meta.json — so this
+// is safe to call repeatedly without reencrypting the payload.
+func (d *Daemon) handleEvidenceTag(req *schema.JSONRPCRequest) (json.RawMessage, *schema.JSONRPCError) {
+	var p schema.EvidenceTagParams
+	if err := unmarshalParams(req.Params, &p); err != nil {
+		return nil, err
+	}
+	if p.EvidenceID == "" {
+		return nil, rpcErr(schema.ErrCodeInvalidParams, "evidence_id required")
+	}
+	active, rpcE := d.requireActive()
+	if rpcE != nil {
+		return nil, rpcE
+	}
+	merged, err := active.Vault.AddTags(p.EvidenceID, p.Tags)
+	if err != nil {
+		if errors.Is(err, vault.ErrNotFound) {
+			return nil, rpcErr(schema.ErrCodeEvidenceNotFound, fmt.Sprintf("evidence %s not found", p.EvidenceID))
+		}
+		return nil, rpcErr(schema.ErrCodeInternalError, err.Error())
+	}
+	return encodeResult(schema.EvidenceTagResult{OK: true, Tags: merged})
 }
 
 func (d *Daemon) handleFindingsCreate(req *schema.JSONRPCRequest) (json.RawMessage, *schema.JSONRPCError) {

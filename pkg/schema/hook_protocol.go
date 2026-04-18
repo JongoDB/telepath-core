@@ -51,6 +51,7 @@ const (
 	ErrCodeScopeDenied        = -33003
 	ErrCodeApprovalDenied     = -33004
 	ErrCodeDaemonShuttingDown = -33005
+	ErrCodeEvidenceNotFound   = -33006
 )
 
 // Method names — mirrored in hooks/telepath_hook_lib.py. Changing a name

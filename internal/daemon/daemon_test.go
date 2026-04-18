@@ -15,6 +15,7 @@ import (
 	"github.com/fsc/telepath-core/internal/engagement"
 	"github.com/fsc/telepath-core/internal/ipc"
 	"github.com/fsc/telepath-core/internal/keys"
+	"github.com/fsc/telepath-core/internal/vault"
 	"github.com/fsc/telepath-core/pkg/schema"
 )
 
@@ -362,6 +363,78 @@ func TestDaemon_TransportLifecycle(t *testing.T) {
 	_ = json.Unmarshal(res3, &out3)
 	if out3.Status.State != "down" {
 		t.Errorf("down result: %+v", out3.Status)
+	}
+}
+
+func TestDaemon_EvidenceTag_MergesAndPersists(t *testing.T) {
+	t.Parallel()
+	d, mgr := newTestDaemon(t)
+	if _, err := mgr.Create(engagement.CreateParams{ID: "e1", ClientName: "C", AssessmentType: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	active, err := mgr.Load("e1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed one evidence item through the vault directly — shortcut to avoid
+	// routing through files.store_synthesized, which is tested elsewhere.
+	hash, err := active.Vault.Put([]byte("raw evidence"), vault.Metadata{
+		ContentType: "text/plain",
+		Tags:        []string{"interview"},
+	})
+	if err != nil {
+		t.Fatalf("seed put: %v", err)
+	}
+
+	res, err := ipc.Call(d.SocketPath(), schema.MethodEvidenceTag, schema.EvidenceTagParams{
+		EvidenceID: hash,
+		Tags:       []string{"critical", "interview"}, // "interview" already present → dedup
+	})
+	if err != nil {
+		t.Fatalf("evidence.tag: %v", err)
+	}
+	var out schema.EvidenceTagResult
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK {
+		t.Errorf("OK=false")
+	}
+	if len(out.Tags) != 2 || out.Tags[0] != "interview" || out.Tags[1] != "critical" {
+		t.Errorf("tags = %v, want [interview critical]", out.Tags)
+	}
+
+	// Verify persistence via evidence.search on the new tag.
+	sres, err := ipc.Call(d.SocketPath(), schema.MethodEvidenceSearch, schema.EvidenceSearchParams{Tag: "critical"})
+	if err != nil {
+		t.Fatalf("evidence.search: %v", err)
+	}
+	var sout schema.EvidenceSearchResult
+	_ = json.Unmarshal(sres, &sout)
+	if len(sout.Items) != 1 || sout.Items[0].EvidenceID != hash {
+		t.Errorf("search did not return tagged item: %+v", sout.Items)
+	}
+}
+
+func TestDaemon_EvidenceTag_NotFound(t *testing.T) {
+	t.Parallel()
+	d, mgr := newTestDaemon(t)
+	if _, err := mgr.Create(engagement.CreateParams{ID: "e2", ClientName: "C", AssessmentType: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Load("e2"); err != nil {
+		t.Fatal(err)
+	}
+	bogus := strings.Repeat("0", 64)
+	_, err := ipc.Call(d.SocketPath(), schema.MethodEvidenceTag, schema.EvidenceTagParams{
+		EvidenceID: bogus,
+		Tags:       []string{"x"},
+	})
+	if err == nil {
+		t.Fatalf("expected error for missing evidence")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error should mention not-found: %v", err)
 	}
 }
 

@@ -228,6 +228,52 @@ func (v *Vault) Search(f Filter) ([]Metadata, error) {
 	return out, nil
 }
 
+// AddTags merges tags into the metadata for the given hash and returns the
+// resulting tag set. Existing tags are preserved; new tags are appended in
+// order and deduplicated. Returns ErrNotFound when no item exists.
+//
+// The ciphertext is untouched — only the side-car .meta.json is rewritten.
+// Atomic via the same temp-file + rename pattern as Put.
+func (v *Vault) AddTags(hash string, tags []string) ([]string, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	meta, err := v.readMeta(hash)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(meta.Tags)+len(tags))
+	merged := make([]string, 0, len(meta.Tags)+len(tags))
+	for _, t := range meta.Tags {
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		merged = append(merged, t)
+	}
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		merged = append(merged, t)
+	}
+	meta.Tags = merged
+
+	mBytes, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("vault: marshal meta: %w", err)
+	}
+	if err := writeAtomic(v.metaPath(hash), mBytes, 0o600); err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
 // ErrNotFound is returned by Get when the hash is absent.
 var ErrNotFound = errors.New("vault: not found")
 

@@ -19,6 +19,62 @@ func makeKey(b byte) []byte {
 	return k
 }
 
+func TestVault_AddTags_MergesAndDedups(t *testing.T) {
+	t.Parallel()
+	v, err := Open(t.TempDir(), makeKey(7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := v.Put([]byte("payload"), Metadata{Tags: []string{"interview", "config"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := v.AddTags(hash, []string{"critical", "interview", "  ", "escalation"})
+	if err != nil {
+		t.Fatalf("AddTags: %v", err)
+	}
+	want := []string{"interview", "config", "critical", "escalation"}
+	if len(got) != len(want) {
+		t.Fatalf("tags = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("tags[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	// Second call is a no-op when all tags already present.
+	again, err := v.AddTags(hash, []string{"interview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != len(want) {
+		t.Errorf("duplicate-only call changed tag count: %v", again)
+	}
+
+	// Persistence check via Get.
+	_, meta, err := v.Get(hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meta.Tags) != len(want) {
+		t.Errorf("persisted tags = %v, want %v", meta.Tags, want)
+	}
+}
+
+func TestVault_AddTags_NotFound(t *testing.T) {
+	t.Parallel()
+	v, err := Open(t.TempDir(), makeKey(8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = v.AddTags("0000000000000000000000000000000000000000000000000000000000000000", []string{"x"})
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestVault_PutGet(t *testing.T) {
 	t.Parallel()
 	v, err := Open(t.TempDir(), makeKey(1))
