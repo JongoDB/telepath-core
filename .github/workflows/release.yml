@@ -9,10 +9,6 @@ permissions:
   id-token: write  # cosign keyless via GitHub OIDC
 
 jobs:
-  # One job per OS/arch. Each builds its binary, packages, generates an
-  # SBOM, and uploads directly to the GitHub Release for this tag.
-  # No intermediate actions/upload-artifact step — GitHub Release assets
-  # live on a separate, much larger bucket than the Actions artifact store.
   build:
     name: build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ${{ matrix.runner }}
@@ -25,12 +21,16 @@ jobs:
             goarch: amd64
             packages: true
             ext: ""
+          # Both darwin arches build on macos-latest (Apple Silicon runner).
+          # Cross-compiling darwin/amd64 with CGO=0 is plain
+          # `GOARCH=amd64 go build` — avoids the macos-13 Intel runner
+          # queue, which we observed holding releases for 30+ minutes.
           - runner: macos-latest
             goos: darwin
             goarch: arm64
             packages: false
             ext: ""
-          - runner: macos-13
+          - runner: macos-latest
             goos: darwin
             goarch: amd64
             packages: false
@@ -116,9 +116,6 @@ jobs:
             telepath-*.sbom.json
           fail_on_unmatched_files: false
 
-  # Finalize: generate structured release notes from commits (git-cliff),
-  # compute SHA256SUMS, sign with cosign keyless, attach everything + set
-  # the release body from git-cliff output.
   finalize:
     name: finalize (notes + SHA256SUMS + sigstore)
     needs: build
@@ -129,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # git-cliff needs the full history for tag ranges
+          fetch-depth: 0
 
       - name: install git-cliff
         shell: bash
