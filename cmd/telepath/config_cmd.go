@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -411,25 +412,32 @@ func runClaudeSubscriptionOAuth(reader *bufio.Reader, out io.Writer, store keys.
 // `claude setup-token` directly on the CLI. We then prompt the
 // operator to paste the token back into telepath.
 //
-// When claude is NOT on PATH, we point the operator at the one-liner
-// to install it. They re-run `telepath config init` once it's
-// available. Automation (non-interactive) skips the subprocess
-// entirely and requires the token on stdin.
+// When claude is NOT on PATH in interactive mode we run the upstream
+// install.sh inline so the operator never has to bounce out of
+// `telepath config init`. Automation (non-interactive) skips both the
+// auto-install and the subprocess and requires the token on stdin.
 func captureClaudeOAuthToken(r *bufio.Reader, out, errOut io.Writer, opts configInitOpts, echoNewline bool) (string, error) {
 	if opts.interactive {
-		if _, err := exec.LookPath("claude"); err != nil {
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "Claude Code (the `claude` CLI) isn't on your PATH. Install it first, then re-run:")
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "  curl -fsSL https://claude.ai/install.sh | bash")
-			fmt.Fprintln(out, "  telepath config init")
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "Or paste an existing CLAUDE_CODE_OAUTH_TOKEN below to skip the handoff.")
-		} else {
+		claudePath, err := exec.LookPath("claude")
+		if err != nil {
+			installed, ierr := installClaudeCode(out, errOut)
+			if ierr != nil {
+				fmt.Fprintln(out)
+				fmt.Fprintf(out, "Auto-install of Claude Code failed (%v).\n", ierr)
+				fmt.Fprintln(out, "You can install it manually with:")
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, "  curl -fsSL https://claude.ai/install.sh | bash")
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, "Or paste an existing CLAUDE_CODE_OAUTH_TOKEN below to skip the handoff.")
+			} else {
+				claudePath = installed
+			}
+		}
+		if claudePath != "" {
 			fmt.Fprintln(out)
 			fmt.Fprintln(out, "Launching `claude setup-token` — sign in when the browser opens, and claude will print your token when done.")
 			fmt.Fprintln(out)
-			cmd := exec.Command("claude", "setup-token")
+			cmd := exec.Command(claudePath, "setup-token")
 			cmd.Stdin = os.Stdin
 			cmd.Stdout = out
 			cmd.Stderr = errOut
@@ -445,6 +453,62 @@ func captureClaudeOAuthToken(r *bufio.Reader, out, errOut io.Writer, opts config
 		return "", fmt.Errorf("token required")
 	}
 	return token, nil
+}
+
+// installClaudeCode runs the upstream claude.ai/install.sh and returns
+// an absolute path to the installed `claude` binary. The installer puts
+// the launcher somewhere claude's own `install` subcommand chose (most
+// commonly ~/.claude/local/claude); we surface it by running
+// `bash -lc 'command -v claude'` so the operator's shell profile — the
+// thing that puts the new dir on PATH — gets a chance to load.
+func installClaudeCode(out, errOut io.Writer) (string, error) {
+	// install.sh is Unix-only. On Windows we point operators at the
+	// native install docs and let them re-run — matches the pattern used
+	// by `telepath update` for platform-specific upgrade paths.
+	if runtime.GOOS == "windows" {
+		return "", errors.New("automated install is Unix-only; see https://code.claude.com/docs for Windows")
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Claude Code (the `claude` CLI) isn't installed yet.")
+	fmt.Fprintln(out, "Installing it now via claude.ai/install.sh …")
+	fmt.Fprintln(out)
+	install := exec.Command("sh", "-c", "curl -fsSL https://claude.ai/install.sh | bash")
+	install.Stdin = os.Stdin
+	install.Stdout = out
+	install.Stderr = errOut
+	if err := install.Run(); err != nil {
+		return "", fmt.Errorf("install.sh: %w", err)
+	}
+
+	// Best-case: the new dir is already on our PATH.
+	if p, err := exec.LookPath("claude"); err == nil {
+		return p, nil
+	}
+	// Login shell sources the operator's profile (~/.bashrc, ~/.zshrc)
+	// which claude's installer updates to prepend its bin dir.
+	if p, err := lookupClaudeViaLoginShell(); err == nil && p != "" {
+		return p, nil
+	}
+	// Last resort: probe the canonical install location directly.
+	if home, _ := os.UserHomeDir(); home != "" {
+		candidate := home + "/.claude/local/claude"
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("claude installed but binary not found on PATH — open a new shell and re-run `telepath config init`")
+}
+
+// lookupClaudeViaLoginShell asks a login bash to resolve `claude` so we
+// pick up PATH entries added by the installer's rc-file patch. Returns
+// the absolute path on success.
+func lookupClaudeViaLoginShell() (string, error) {
+	cmd := exec.Command("bash", "-lc", "command -v claude")
+	buf, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(buf)), nil
 }
 
 // prompt asks the user for a single line of input. Default value returned
