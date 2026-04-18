@@ -60,15 +60,17 @@ func defaultInstallDir() string {
 }
 
 // runInstall copies the running binary to targetDir/telepath(.exe), making
-// parent dirs as needed. Returns a descriptive error if a binary already
-// lives there and --force wasn't passed.
+// parent dirs as needed. Idempotent in three cases:
+//  1. src and target are the same file (running `install` from installed loc)
+//  2. target exists with identical content (same binary, different path)
+//  3. target does not exist
+//
+// Only case (4) — target exists with different content — requires --force.
 func runInstall(out io.Writer, targetDir string, force bool) error {
 	src, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("install: resolve self: %w", err)
 	}
-	// Resolve symlinks so installs from an extracted tarball work even when
-	// the extracted path is itself a symlink.
 	if resolved, err := filepath.EvalSymlinks(src); err == nil {
 		src = resolved
 	}
@@ -83,28 +85,35 @@ func runInstall(out io.Writer, targetDir string, force bool) error {
 		return fmt.Errorf("install: mkdir %s: %w", targetDir, err)
 	}
 
-	// Detect the "already installed to the target" case so running
-	// `telepath install` after it's already on PATH is a helpful no-op
-	// instead of an error.
+	// Case 1: same path.
 	if samePath(src, target) {
 		fmt.Fprintf(out, "telepath is already installed at %s.\n", target)
-		printPathHint(out, targetDir)
+		printPathAdvice(out, targetDir)
 		printNextSteps(out)
 		return nil
 	}
 
-	if !force {
-		if _, err := os.Stat(target); err == nil {
-			return fmt.Errorf("install: %s already exists; pass --force to overwrite", target)
+	// Cases 2 & 4: target exists. Check content.
+	if _, err := os.Stat(target); err == nil {
+		// Compare content hashes. Same content -> idempotent no-op.
+		srcSum, serr := sumFile(src)
+		tgtSum, terr := sumFile(target)
+		if serr == nil && terr == nil && srcSum == tgtSum {
+			fmt.Fprintf(out, "telepath is already installed at %s (identical binary).\n", target)
+			printPathAdvice(out, targetDir)
+			printNextSteps(out)
+			return nil
+		}
+		if !force {
+			return fmt.Errorf("install: %s already exists with different content; pass --force to overwrite", target)
 		}
 	}
 
 	if err := copyExecutable(src, target); err != nil {
 		return fmt.Errorf("install: copy: %w", err)
 	}
-
 	fmt.Fprintf(out, "Installed telepath to %s\n", target)
-	printPathHint(out, targetDir)
+	printPathAdvice(out, targetDir)
 	printNextSteps(out)
 	return nil
 }
@@ -155,13 +164,25 @@ func copyExecutable(src, dst string) error {
 	return nil
 }
 
-// printPathHint emits the one-liner the operator pastes to add targetDir to
-// their PATH. Dispatches on platform + $SHELL so zsh/bash/fish each get the
-// right syntax; Windows gets the PowerShell [Environment]::SetEnvironmentVariable
-// invocation.
-func printPathHint(out io.Writer, targetDir string) {
+// printPathAdvice prints PATH setup guidance appropriate to the situation.
+// Two paths:
+//  1. targetDir is already on PATH → short "already on PATH" note.
+//  2. Not on PATH → emit the shell-specific export command for the
+//     operator to paste into their rc file.
+//
+// Ubuntu/Debian's default ~/.profile auto-adds ~/.local/bin to PATH for
+// login shells; we note that when relevant so operators don't paste a
+// redundant line into ~/.bashrc.
+func printPathAdvice(out io.Writer, targetDir string) {
+	onPath := dirOnPath(targetDir)
+
 	if runtime.GOOS == "windows" {
 		fmt.Fprintln(out)
+		if onPath {
+			fmt.Fprintln(out, "telepath is on your current PATH.")
+			fmt.Fprintln(out, "Verify with:  telepath --version")
+			return
+		}
 		fmt.Fprintln(out, "Add telepath to your user PATH by pasting this into PowerShell:")
 		fmt.Fprintln(out)
 		fmt.Fprintf(out, "  [Environment]::SetEnvironmentVariable('PATH', '%s;' + [Environment]::GetEnvironmentVariable('PATH', 'User'), 'User')\n", targetDir)
@@ -170,6 +191,20 @@ func printPathHint(out io.Writer, targetDir string) {
 		fmt.Fprintln(out, "  telepath --version")
 		return
 	}
+
+	if onPath {
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "telepath is on your current PATH.")
+		fmt.Fprintln(out, "Verify with:  telepath --version")
+		return
+	}
+
+	// On Debian/Ubuntu the default ~/.profile already adds ~/.local/bin
+	// to PATH for login shells. A new terminal will pick it up without
+	// any rc edit. Detect the default-location case and give the lighter
+	// advice.
+	home, _ := os.UserHomeDir()
+	defaultLocalBin := home != "" && targetDir == filepath.Join(home, ".local", "bin")
 
 	shellBase := filepath.Base(os.Getenv("SHELL"))
 	var rc, line string
@@ -187,12 +222,45 @@ func printPathHint(out io.Writer, targetDir string) {
 		rc = "~/.profile"
 		line = fmt.Sprintf(`export PATH="%s:$PATH"`, targetDir)
 	}
+
 	fmt.Fprintln(out)
-	fmt.Fprintf(out, "To add %s to your PATH, paste this into your shell:\n", targetDir)
+	if defaultLocalBin {
+		fmt.Fprintf(out, "%s is telepath's default install location.\n", targetDir)
+		fmt.Fprintln(out, "On Debian/Ubuntu the default ~/.profile auto-adds it to PATH for new login shells —")
+		fmt.Fprintln(out, "open a new terminal and `telepath --version` should just work.")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "If your shell doesn't auto-pick-up this directory, paste:")
+	} else {
+		fmt.Fprintf(out, "To add %s to your PATH, paste this into your shell:\n", targetDir)
+	}
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "  echo '%s' >> %s && source %s\n", line, rc, rc)
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Verify with:  telepath --version")
+}
+
+// dirOnPath returns true when targetDir appears in the current PATH. Uses
+// exact match on the cleaned path, so ~/.local/bin vs /home/alice/.local/bin
+// still resolves correctly.
+func dirOnPath(targetDir string) bool {
+	clean, err := filepath.Abs(targetDir)
+	if err != nil {
+		return false
+	}
+	sep := ":"
+	if runtime.GOOS == "windows" {
+		sep = ";"
+	}
+	for _, p := range filepath.SplitList(os.Getenv("PATH")) {
+		if p == "" {
+			continue
+		}
+		if a, err := filepath.Abs(p); err == nil && a == clean {
+			return true
+		}
+	}
+	_ = sep
+	return false
 }
 
 // printNextSteps tells the operator what to do immediately after install.
