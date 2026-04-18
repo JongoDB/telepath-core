@@ -269,6 +269,7 @@ func runConfigInitTUI(out io.Writer) error {
 	}
 
 	fmt.Fprintf(out, "Config saved to %s.\n", path)
+	printConfigNextSteps(out, store.Backend())
 	return nil
 }
 
@@ -343,7 +344,25 @@ func runConfigInit(in io.Reader, out, errOut io.Writer, opts configInitOpts) err
 		return err
 	}
 	fmt.Fprintf(out, "wrote %s (backend=%s)\n", path, store.Backend())
+	printConfigNextSteps(out, store.Backend())
 	return nil
+}
+
+// printConfigNextSteps tails the successful config-init flow with the
+// concrete next commands. Symmetric with install's printNextSteps — an
+// operator shouldn't have to guess what "saved" means in practice.
+func printConfigNextSteps(out io.Writer, backend string) {
+	fmt.Fprintln(out)
+	if backend == "file" {
+		fmt.Fprintln(out, "Keystore backend: file (~/.telepath/keystore/). OS keychain wasn't available on this host —")
+		fmt.Fprintln(out, "expected for headless servers; on a desktop, install/start the keychain daemon and re-run.")
+		fmt.Fprintln(out)
+	}
+	fmt.Fprintln(out, "Next:")
+	fmt.Fprintln(out, "  telepath doctor                 # verify credential + daemon + keystore")
+	fmt.Fprintln(out, "  telepath claude                 # launch Claude Code with the credential injected")
+	fmt.Fprintln(out, "  telepath engagement new <id>    # scaffold your first engagement")
+	fmt.Fprintln(out, "  telepath daemon run             # start the daemon (foreground)")
 }
 
 // runClaudeSubscriptionOAuth executes the headless PKCE flow documented in
