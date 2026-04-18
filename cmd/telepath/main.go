@@ -53,6 +53,7 @@ func main() {
 	}
 	root.AddCommand(
 		addToGroup(newInstallCmd(), "setup"),
+		addToGroup(newUpdateCmd(), "setup"),
 		addToGroup(newUninstallCmd(), "setup"),
 		addToGroup(newConfigCmd(), "setup"),
 		addToGroup(newDoctorCmd(), "setup"),
