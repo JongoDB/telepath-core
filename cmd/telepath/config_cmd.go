@@ -2,18 +2,21 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/fsc/telepath-core/internal/config"
 	"github.com/fsc/telepath-core/internal/keys"
+	claudeoauth "github.com/fsc/telepath-core/internal/oauth/claude"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -231,10 +234,22 @@ func runConfigInitTUI(out io.Writer) error {
 		fmt.Fprintf(out, "Stored %s in keystore (backend=%s).\n", slot, store.Backend())
 	}
 
-	fmt.Fprintf(out, "Config saved to %s.\n", path)
+	// After the TUI form ends, subscription-oauth kicks off the PKCE
+	// handoff: print the authorize URL, read back the callback-displayed
+	// code, exchange for access + refresh tokens. Runs in plain stdin
+	// mode (huh's form is over; the URL paste-back is a simple prompt).
 	if method == config.AuthMethodSubscriptionOAuth {
-		fmt.Fprintln(out, "Subscription OAuth: the PKCE capture flow is designed in docs/CLAUDE_OAUTH.md; v0.1 records the method but does not yet open the browser. Re-run when v0.2 ships or use API key as a stopgap.")
+		store, err := keys.Open()
+		if err != nil {
+			return fmt.Errorf("keystore: %w", err)
+		}
+		reader := bufio.NewReader(os.Stdin)
+		if err := runClaudeSubscriptionOAuth(reader, out, store, true); err != nil {
+			return err
+		}
 	}
+
+	fmt.Fprintf(out, "Config saved to %s.\n", path)
 	return nil
 }
 
@@ -300,15 +315,74 @@ func runConfigInit(in io.Reader, out, errOut io.Writer, opts configInitOpts) err
 		}
 		fmt.Fprintln(out, "stored ANTHROPIC_API_KEY in keystore")
 	case config.AuthMethodSubscriptionOAuth:
-		fmt.Fprintln(out, "subscription OAuth capture is not wired in v0.1; see docs/CLAUDE_OAUTH.md for the design.")
-		fmt.Fprintln(out, "The method is recorded but no token was captured. Re-run `telepath config init` when")
-		fmt.Fprintln(out, "the PKCE flow lands, or use --method api-key as a stopgap.")
+		if err := runClaudeSubscriptionOAuth(reader, out, store, promptEchoesNewline); err != nil {
+			return err
+		}
 	}
 
 	if err := config.Save(path, cfg); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "wrote %s (backend=%s)\n", path, store.Backend())
+	return nil
+}
+
+// runClaudeSubscriptionOAuth executes the headless PKCE flow documented in
+// docs/CLAUDE_OAUTH.md (plugin repo): generate a session, print the
+// authorize URL for the operator to open in their browser, read back the
+// code+state Anthropic's callback page displays, exchange for access +
+// refresh tokens, and persist all three (access, refresh, expires_at)
+// into the keystore.
+//
+// Shared between the TUI wizard (after form.Run) and the stdin wizard so
+// the PKCE handoff looks identical in either mode. Keeping the terminal
+// I/O here and the HTTP/crypto in internal/oauth/claude lets the oauth
+// package stay stdlib-only and unit-testable without terminal mocks.
+func runClaudeSubscriptionOAuth(reader *bufio.Reader, out io.Writer, store keys.Store, echoNewline bool) error {
+	session, err := claudeoauth.NewSession()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Open this URL in your browser to authorize telepath against your Claude subscription:")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "  "+session.AuthURL)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "After signing in, Anthropic will show a page containing your authorization code.")
+	fmt.Fprintln(out, "Paste the full `code#state` string (or the whole callback URL) below.")
+	fmt.Fprintln(out)
+
+	raw := prompt(reader, out, "Authorization code", "", echoNewline)
+	code, stateFromInput, err := claudeoauth.ParseCallbackInput(raw)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	tokens, err := claudeoauth.ExchangeCode(ctx, session, code, stateFromInput)
+	if err != nil {
+		return fmt.Errorf("subscription OAuth exchange: %w", err)
+	}
+
+	if err := store.Set(config.KeystoreClaudeSubAccessToken, []byte(tokens.AccessToken)); err != nil {
+		return err
+	}
+	if tokens.RefreshToken != "" {
+		if err := store.Set(config.KeystoreClaudeSubRefreshToken, []byte(tokens.RefreshToken)); err != nil {
+			return err
+		}
+	}
+	if err := store.Set(config.KeystoreClaudeSubExpiresAt, []byte(tokens.ExpiresAt.Format(time.RFC3339))); err != nil {
+		return err
+	}
+
+	if email := claudeoauth.LookupEmail(ctx, tokens.AccessToken); email != "" {
+		fmt.Fprintf(out, "Connected as %s.\n", email)
+	}
+	fmt.Fprintf(out, "Stored subscription OAuth tokens in keystore (backend=%s).\n", store.Backend())
+	fmt.Fprintf(out, "Access token expires at %s; `telepath claude` will refresh before expiry.\n",
+		tokens.ExpiresAt.Format(time.RFC3339))
 	return nil
 }
 

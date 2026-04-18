@@ -134,10 +134,14 @@ func KnownKeys() []string {
 
 // Keystore slot names used by the wizard and by `telepath claude`.
 const (
-	KeystoreClaudeOAuthToken     = "claude.oauth_token"
-	KeystoreClaudeAPIKey         = "claude.api_key"
-	KeystoreClaudeSubAccessToken = "claude.subscription_access_token"
+	KeystoreClaudeOAuthToken      = "claude.oauth_token"
+	KeystoreClaudeAPIKey          = "claude.api_key"
+	KeystoreClaudeSubAccessToken  = "claude.subscription_access_token"
 	KeystoreClaudeSubRefreshToken = "claude.subscription_refresh_token"
+	// RFC3339 timestamp stored next to the subscription tokens; the claude
+	// subcommand reads this before picking a token and refreshes when it
+	// falls within a 5-minute pre-expiry window.
+	KeystoreClaudeSubExpiresAt = "claude.subscription_expires_at"
 )
 
 // KeystoreSlotForMethod returns the primary keystore slot name for the
