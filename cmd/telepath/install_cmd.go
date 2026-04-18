@@ -16,7 +16,7 @@ import (
 // single install path — no bash / PowerShell script to keep in sync.
 func newInstallCmd() *cobra.Command {
 	var dir string
-	var force bool
+	var noOverwrite bool
 	c := &cobra.Command{
 		Use:   "install",
 		Short: "Copy this binary to a canonical location and print PATH setup",
@@ -24,21 +24,30 @@ func newInstallCmd() *cobra.Command {
 directory (default: ~/.local/bin on Unix, %LOCALAPPDATA%\telepath\bin on Windows)
 and print the shell-specific PATH-update line for you to paste.
 
+install replaces an existing telepath at the destination by default —
+that's the upgrade path (same flow most users expect from brew upgrade,
+rustup, apt install -U, etc.). Pass --no-overwrite to opt into
+protective behavior that errors when the existing binary has different
+content.
+
 Typical first-run workflow:
   1. Download telepath-<version>-<os>-<arch>.tar.gz (or .zip on Windows)
   2. Extract it
-  3. ./telepath install     — this command
+  3. ./telepath install
   4. Paste the PATH line into your shell rc
-  5. telepath config init   — open the TUI`,
+  5. telepath config init
+
+Or skip steps 1-3 with:
+  curl -sSL https://raw.githubusercontent.com/JongoDB/telepath-core/main/scripts/install.sh | sh`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
 				dir = defaultInstallDir()
 			}
-			return runInstall(cmd.OutOrStdout(), dir, force)
+			return runInstall(cmd.OutOrStdout(), dir, noOverwrite)
 		},
 	}
 	c.Flags().StringVar(&dir, "dir", "", "install directory (defaults per-OS)")
-	c.Flags().BoolVar(&force, "force", false, "overwrite an existing telepath at the destination")
+	c.Flags().BoolVar(&noOverwrite, "no-overwrite", false, "error if a different telepath exists at the destination (default: overwrite)")
 	return c
 }
 
@@ -59,14 +68,18 @@ func defaultInstallDir() string {
 	return filepath.Join(home, ".local", "bin")
 }
 
-// runInstall copies the running binary to targetDir/telepath(.exe), making
-// parent dirs as needed. Idempotent in three cases:
-//  1. src and target are the same file (running `install` from installed loc)
-//  2. target exists with identical content (same binary, different path)
-//  3. target does not exist
+// runInstall copies the running binary to targetDir/telepath(.exe).
+// Default behavior is overwrite — install is an upgrade path, and every
+// other tool in the ecosystem (rustup, brew upgrade, apt install -U,
+// go install @latest) just replaces. The only case where we short-circuit
+// is when the target is bit-for-bit identical to the source (idempotent
+// re-run), so "install ran twice in a row" reports useful output instead
+// of copying the same bytes again.
 //
-// Only case (4) — target exists with different content — requires --force.
-func runInstall(out io.Writer, targetDir string, force bool) error {
+// `--no-overwrite` flips to the old conservative behavior (error when the
+// target exists with different content) for operators who explicitly want
+// a protective install.
+func runInstall(out io.Writer, targetDir string, noOverwrite bool) error {
 	src, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("install: resolve self: %w", err)
@@ -85,7 +98,8 @@ func runInstall(out io.Writer, targetDir string, force bool) error {
 		return fmt.Errorf("install: mkdir %s: %w", targetDir, err)
 	}
 
-	// Case 1: same path.
+	// Case 1: same path (e.g. running `telepath install` from the
+	// installed binary).
 	if samePath(src, target) {
 		fmt.Fprintf(out, "telepath is already installed at %s.\n", target)
 		printPathAdvice(out, targetDir)
@@ -93,9 +107,10 @@ func runInstall(out io.Writer, targetDir string, force bool) error {
 		return nil
 	}
 
-	// Cases 2 & 4: target exists. Check content.
+	// Case 2: target exists.
 	if _, err := os.Stat(target); err == nil {
-		// Compare content hashes. Same content -> idempotent no-op.
+		// Same content → idempotent no-op (keeps "install ran twice"
+		// from silently re-writing the same bytes).
 		srcSum, serr := sumFile(src)
 		tgtSum, terr := sumFile(target)
 		if serr == nil && terr == nil && srcSum == tgtSum {
@@ -104,9 +119,10 @@ func runInstall(out io.Writer, targetDir string, force bool) error {
 			printNextSteps(out)
 			return nil
 		}
-		if !force {
-			return fmt.Errorf("install: %s already exists with different content; pass --force to overwrite", target)
+		if noOverwrite {
+			return fmt.Errorf("install: %s already exists with different content; remove --no-overwrite to upgrade", target)
 		}
+		fmt.Fprintf(out, "Upgrading telepath at %s (was a different build).\n", target)
 	}
 
 	if err := copyExecutable(src, target); err != nil {
