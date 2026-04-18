@@ -199,6 +199,68 @@ func TestExport_VerifyMDReferencesPubKey(t *testing.T) {
 	}
 }
 
+func TestExport_PandocAbsent_LeavesOptionalFieldsEmpty(t *testing.T) {
+	// Force PATH to a directory that doesn't contain pandoc so LookPath
+	// fails. Run must still succeed; only the optional fields stay empty.
+	// Note: no t.Parallel() — we mutate process-wide PATH.
+	t.Setenv("PATH", t.TempDir())
+	in := setupFixture(t)
+	outDir := t.TempDir()
+	out, err := Run(in, outDir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.ReportDocx != "" || out.ReportPDF != "" || out.SlidesPPTX != "" {
+		t.Errorf("pandoc absent but fields populated: %+v", out)
+	}
+	if out.ReportMarkdown == "" {
+		t.Errorf("markdown should still be produced")
+	}
+}
+
+func TestExport_PandocPresent_RendersDeliverables(t *testing.T) {
+	// Stub pandoc: a small shell script on PATH that writes to -o <file>
+	// (no t.Parallel — mutates process-wide PATH).
+	// with a stub body. This exercises renderPandocDeliverables without
+	// needing real pandoc installed in CI.
+	stubDir := t.TempDir()
+	stub := filepath.Join(stubDir, "pandoc")
+	script := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    shift
+    printf 'stub deliverable from pandoc stub\n' > "$1"
+  fi
+  shift
+done
+`
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stubDir)
+
+	in := setupFixture(t)
+	outDir := t.TempDir()
+	out, err := Run(in, outDir)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, p := range []string{out.ReportDocx, out.ReportPDF, out.SlidesPPTX} {
+		if p == "" {
+			t.Errorf("deliverable path empty: %+v", out)
+			continue
+		}
+		info, err := os.Stat(p)
+		if err != nil {
+			t.Errorf("stat %s: %v", p, err)
+			continue
+		}
+		if info.Size() == 0 {
+			t.Errorf("deliverable %s is empty", p)
+		}
+	}
+}
+
 func TestExport_EmptyFindingsStillWorks(t *testing.T) {
 	t.Parallel()
 	in := setupFixture(t)

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -138,7 +139,54 @@ func Run(in Inputs, outDir string) (Outputs, error) {
 	}
 	out.Verify = verifyPath
 
+	// 6. Optional deliverables: DOCX + PDF + PPTX via pandoc. Best-effort
+	// — pandoc absent simply leaves the fields empty. Markdown remains
+	// the authoritative source; these derivatives exist so operators can
+	// hand a stakeholder a bound deliverable without extra tooling.
+	renderPandocDeliverables(outDir, reportPath, &out)
+
 	return out, nil
+}
+
+// renderPandocDeliverables invokes pandoc (if on PATH) to convert
+// report.md into report.docx, report.pdf, and slides.pptx. Each is
+// independent — failure of one does not block the others. Errors are
+// swallowed intentionally; the Markdown source is always the canonical
+// deliverable and the DOCX/PDF/PPTX are conveniences. An operator who
+// needs them can install pandoc and re-run `telepath engagement export`.
+func renderPandocDeliverables(outDir, reportPath string, out *Outputs) {
+	pandoc, err := exec.LookPath("pandoc")
+	if err != nil {
+		return
+	}
+
+	docxPath := filepath.Join(outDir, "report.docx")
+	if runPandoc(pandoc, reportPath, docxPath) == nil {
+		out.ReportDocx = docxPath
+	}
+
+	pdfPath := filepath.Join(outDir, "report.pdf")
+	// PDF requires a TeX engine (xelatex or similar); pandoc will error
+	// if none is present. Fine — PDF stays empty in that case.
+	if runPandoc(pandoc, reportPath, pdfPath) == nil {
+		out.ReportPDF = pdfPath
+	}
+
+	slidesPath := filepath.Join(outDir, "slides.pptx")
+	// Pandoc infers PPTX from the extension; headers become slide titles.
+	// The Markdown report's "## Section" structure maps cleanly to slides.
+	if runPandoc(pandoc, reportPath, slidesPath) == nil {
+		out.SlidesPPTX = slidesPath
+	}
+}
+
+// runPandoc invokes pandoc <input> -o <output>. Returns the error so
+// renderPandocDeliverables can decide per-artifact whether to record the
+// path. Uses exec.Command directly (no context/timeout) — document
+// conversion for a v0.1-sized report is near-instant.
+func runPandoc(pandocBin, in, out string) error {
+	cmd := exec.Command(pandocBin, in, "-o", out)
+	return cmd.Run()
 }
 
 // writeJSON marshals v indented and writes atomically.
