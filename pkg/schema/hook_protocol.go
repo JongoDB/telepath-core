@@ -318,12 +318,14 @@ type TransportStatusResult struct {
 // --- Protocol proxy RPCs (called by the MCP adapter) ---
 
 const (
-	MethodSSHExec      = "ssh.exec"
-	MethodHTTPRequest  = "http.request"
-	MethodFilesStore   = "files.store_synthesized"
-	MethodFilesGet     = "files.get_evidence"
-	MethodEvidenceSearch = "evidence.search"
-	MethodEvidenceTag    = "evidence.tag"
+	MethodSSHExec         = "ssh.exec"
+	MethodHTTPRequest     = "http.request"
+	MethodFilesStore      = "files.store_synthesized"
+	MethodFilesGet        = "files.get_evidence"
+	MethodFilesCollect    = "files.collect"      // SFTP fetch into vault
+	MethodFilesListRemote = "files.list_remote"  // SFTP directory listing
+	MethodEvidenceSearch  = "evidence.search"
+	MethodEvidenceTag     = "evidence.tag"
 )
 
 // SSHExecParams is the input for MethodSSHExec.
@@ -370,6 +372,58 @@ type HTTPRequestResult struct {
 	Truncated  bool                `json:"truncated,omitempty"`
 	DurationMs int64               `json:"duration_ms"`
 	EvidenceID string              `json:"evidence_id,omitempty"`
+}
+
+// FilesCollectParams is the input for MethodFilesCollect — a one-shot SFTP
+// fetch of a remote file straight into the engagement's vault. Credential
+// fields mirror SSHExecParams and carry the same redaction contract.
+// Scope is checked against protocol "sftp"; operators who want to allow
+// SFTP file collection must list "sftp" in the ROE's allowed_protocols
+// (listing "ssh" alone covers ssh.exec only).
+type FilesCollectParams struct {
+	Host          string   `json:"host"`
+	Port          int      `json:"port,omitempty"`
+	Username      string   `json:"username"`
+	Password      string   `json:"password,omitempty"`
+	PrivateKeyPEM string   `json:"private_key_pem,omitempty"`
+	Passphrase    string   `json:"passphrase,omitempty"`
+	Path          string   `json:"path"`
+	Skill         string   `json:"skill,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+}
+
+// FilesCollectResult is the output for MethodFilesCollect.
+type FilesCollectResult struct {
+	OK         bool   `json:"ok"`
+	EvidenceID string `json:"evidence_id"`
+	Size       int64  `json:"size"`
+	Path       string `json:"path"`
+}
+
+// FilesListRemoteParams is the input for MethodFilesListRemote — SFTP
+// directory listing. Non-recursive by design; one SFTP call per invocation.
+type FilesListRemoteParams struct {
+	Host          string `json:"host"`
+	Port          int    `json:"port,omitempty"`
+	Username      string `json:"username"`
+	Password      string `json:"password,omitempty"`
+	PrivateKeyPEM string `json:"private_key_pem,omitempty"`
+	Passphrase    string `json:"passphrase,omitempty"`
+	Path          string `json:"path"`
+}
+
+// FilesListRemoteResult is the output for MethodFilesListRemote.
+type FilesListRemoteResult struct {
+	OK      bool              `json:"ok"`
+	Entries []RemoteFileEntry `json:"entries"`
+}
+
+// RemoteFileEntry is one row in a remote directory listing.
+type RemoteFileEntry struct {
+	Name  string `json:"name"`
+	Size  int64  `json:"size"`
+	Mode  string `json:"mode"`
+	IsDir bool   `json:"is_dir"`
 }
 
 // FilesStoreParams stores Claude-synthesized content (notes, summaries) as

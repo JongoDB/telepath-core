@@ -60,21 +60,23 @@ func NewWithDialer(d Dialer, hostKey ssh.PublicKey) *Handler {
 	return &Handler{dialer: d, hostKey: hostKey}
 }
 
-// Exec runs a command on host:port as user with the given credentials and
-// returns the completed result. Default port is 22 when port<=0.
-func (h *Handler) Exec(ctx context.Context, host string, port int, creds Credentials, command string) (proxy.ExecResult, error) {
+// OpenClient dials host:port, performs the SSH handshake with creds, and
+// returns the resulting *ssh.Client. Callers own the returned client and
+// must Close() it. Shared between Exec/Stream and the SFTP adapter so the
+// dial + handshake + host-key logic lives in one place.
+func (h *Handler) OpenClient(ctx context.Context, host string, port int, creds Credentials) (*ssh.Client, error) {
 	if host == "" {
-		return proxy.ExecResult{}, errors.New("sshproxy: host required")
+		return nil, errors.New("sshproxy: host required")
 	}
 	if port <= 0 {
 		port = 22
 	}
 	if creds.Username == "" {
-		return proxy.ExecResult{}, errors.New("sshproxy: username required")
+		return nil, errors.New("sshproxy: username required")
 	}
 	authMethods, err := buildAuth(creds)
 	if err != nil {
-		return proxy.ExecResult{}, err
+		return nil, err
 	}
 	var hostKeyCallback ssh.HostKeyCallback
 	if h.hostKey != nil {
@@ -83,11 +85,10 @@ func (h *Handler) Exec(ctx context.Context, host string, port int, creds Credent
 		// #nosec G106 — v0.1 allows any host key. ROE host-key pinning in v0.2.
 		hostKeyCallback = ssh.InsecureIgnoreHostKey()
 	}
-
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := h.dialer.Dial(ctx, "tcp", addr)
 	if err != nil {
-		return proxy.ExecResult{}, fmt.Errorf("sshproxy: dial %s: %w", addr, err)
+		return nil, fmt.Errorf("sshproxy: dial %s: %w", addr, err)
 	}
 	clientCfg := &ssh.ClientConfig{
 		User:            creds.Username,
@@ -98,9 +99,18 @@ func (h *Handler) Exec(ctx context.Context, host string, port int, creds Credent
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, clientCfg)
 	if err != nil {
 		_ = conn.Close()
-		return proxy.ExecResult{}, fmt.Errorf("sshproxy: handshake %s: %w", addr, err)
+		return nil, fmt.Errorf("sshproxy: handshake %s: %w", addr, err)
 	}
-	client := ssh.NewClient(c, chans, reqs)
+	return ssh.NewClient(c, chans, reqs), nil
+}
+
+// Exec runs a command on host:port as user with the given credentials and
+// returns the completed result. Default port is 22 when port<=0.
+func (h *Handler) Exec(ctx context.Context, host string, port int, creds Credentials, command string) (proxy.ExecResult, error) {
+	client, err := h.OpenClient(ctx, host, port, creds)
+	if err != nil {
+		return proxy.ExecResult{}, err
+	}
 	defer client.Close()
 
 	sess, err := client.NewSession()
@@ -136,34 +146,10 @@ func (h *Handler) Exec(ctx context.Context, host string, port int, creds Credent
 // Stream opens a session and returns a ReadCloser over the command's stdout.
 // Intended for long-running commands like `tail -f`; caller closes when done.
 func (h *Handler) Stream(ctx context.Context, host string, port int, creds Credentials, command string) (io.ReadCloser, error) {
-	if port <= 0 {
-		port = 22
-	}
-	authMethods, err := buildAuth(creds)
+	client, err := h.OpenClient(ctx, host, port, creds)
 	if err != nil {
 		return nil, err
 	}
-	hkcb := ssh.InsecureIgnoreHostKey()
-	if h.hostKey != nil {
-		hkcb = ssh.FixedHostKey(h.hostKey)
-	}
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	conn, err := h.dialer.Dial(ctx, "tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("sshproxy: dial %s: %w", addr, err)
-	}
-	clientCfg := &ssh.ClientConfig{
-		User:            creds.Username,
-		Auth:            authMethods,
-		HostKeyCallback: hkcb,
-		Timeout:         15 * time.Second,
-	}
-	c, chans, reqs, err := ssh.NewClientConn(conn, addr, clientCfg)
-	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("sshproxy: handshake: %w", err)
-	}
-	client := ssh.NewClient(c, chans, reqs)
 	sess, err := client.NewSession()
 	if err != nil {
 		_ = client.Close()

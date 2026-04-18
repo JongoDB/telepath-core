@@ -68,9 +68,9 @@ func classifyMCP(tool string, toolInput json.RawMessage) schema.ClassifyResult {
 		return classifyShell(toolInput)
 	case strings.HasSuffix(low, "http.request"), strings.Contains(low, "http_request"):
 		return classifyHTTP(toolInput)
-	case strings.Contains(low, "files_collect"), strings.Contains(low, "sftp_get"):
+	case strings.Contains(low, "files_collect"), strings.Contains(low, "sftp_get"), strings.HasSuffix(low, "files.collect"):
 		return schema.ClassifyResult{OK: true, Class: schema.ClassReadBulk, Reason: "file collection"}
-	case strings.Contains(low, "sftp_list"), strings.Contains(low, "evidence.search"), strings.Contains(low, "evidence_search"):
+	case strings.Contains(low, "sftp_list"), strings.Contains(low, "evidence.search"), strings.Contains(low, "evidence_search"), strings.Contains(low, "files_list_remote"), strings.HasSuffix(low, "files.list_remote"):
 		return schema.ClassifyResult{OK: true, Class: schema.ClassReadEnumeration}
 	case strings.Contains(low, "findings.create"), strings.Contains(low, "notes.create"), strings.Contains(low, "findings_create"), strings.Contains(low, "notes_create"):
 		return schema.ClassifyResult{OK: true, Class: schema.ClassReadEnumeration, Reason: "operator-side artifact; no client-system write"}

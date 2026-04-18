@@ -17,6 +17,7 @@ import (
 	"github.com/fsc/telepath-core/internal/keys"
 	"github.com/fsc/telepath-core/internal/notes"
 	"github.com/fsc/telepath-core/internal/proxy/httpproxy"
+	"github.com/fsc/telepath-core/internal/proxy/sftpproxy"
 	"github.com/fsc/telepath-core/internal/proxy/sshproxy"
 	"github.com/fsc/telepath-core/internal/rendering"
 	"github.com/fsc/telepath-core/internal/transport"
@@ -76,6 +77,10 @@ func (d *Daemon) dispatch(ctx context.Context, req *schema.JSONRPCRequest) (json
 		return d.handleFilesStore(req)
 	case schema.MethodFilesGet:
 		return d.handleFilesGet(req)
+	case schema.MethodFilesCollect:
+		return d.handleFilesCollect(req)
+	case schema.MethodFilesListRemote:
+		return d.handleFilesListRemote(req)
 	case schema.MethodEvidenceSearch:
 		return d.handleEvidenceSearch(req)
 	case schema.MethodEvidenceTag:
@@ -239,9 +244,21 @@ func (d *Daemon) handleAuditCheckpoint(_ *schema.JSONRPCRequest) (json.RawMessag
 }
 
 func (d *Daemon) handleUnresolvedWrites(req *schema.JSONRPCRequest) (json.RawMessage, *schema.JSONRPCError) {
-	// v0.1 week 1-2: no write classification yet, so nothing is ever
-	// unresolved. Returns an empty list with OK=true so the Stop hook
-	// can pass through cleanly during bootstrap testing.
+	// v0.1 pass-through. Classification (approval.classify) is fully wired
+	// as of v0.1.12, but correlating "classified as write" with "approval
+	// audited later" requires a contract with the telepath-v2 hook lib —
+	// payload keys, sequence references — that we haven't coordinated
+	// across repos yet. v0.2 plan: introduce AuditTypeWriteAction +
+	// AuditTypeApprovalDecision; unresolved = write_actions in this
+	// session without a matching approval_decision keyed by sequence. The
+	// schema + handler land here; the hook lib emits the events from
+	// pre/post_tool_use on the plugin side.
+	//
+	// Returning an empty list is safe: Stop-hook callers treat an empty
+	// result as "no pending writes" which is the correct answer until the
+	// tracking machinery is in place. A runaway write-class tool that
+	// bypasses the hook flow would still show up in the audit log for
+	// manual review via `telepath engagement export` + post-hoc scan.
 	var p schema.UnresolvedWritesParams
 	if err := unmarshalParams(req.Params, &p); err != nil {
 		return nil, err
@@ -736,6 +753,110 @@ func (d *Daemon) handleEvidenceSearch(req *schema.JSONRPCRequest) (json.RawMessa
 		})
 	}
 	return encodeResult(schema.EvidenceSearchResult{OK: true, Items: items})
+}
+
+// handleFilesCollect fetches a remote file via SFTP into the engagement's
+// vault. Scope is checked against protocol "sftp" — operators must list it
+// in the ROE's allowed_protocols list explicitly (we intentionally do not
+// treat "ssh" as implying "sftp" since exec and file exfil are different
+// risk tiers).
+func (d *Daemon) handleFilesCollect(req *schema.JSONRPCRequest) (json.RawMessage, *schema.JSONRPCError) {
+	var p schema.FilesCollectParams
+	if err := unmarshalParams(req.Params, &p); err != nil {
+		return nil, err
+	}
+	if p.Host == "" || p.Path == "" {
+		return nil, rpcErr(schema.ErrCodeInvalidParams, "host and path are required")
+	}
+	active, rpcE := d.requireActive()
+	if rpcE != nil {
+		return nil, rpcE
+	}
+	if rpcE := d.checkScope(active, p.Host, "sftp"); rpcE != nil {
+		return nil, rpcE
+	}
+	tr := d.Transport()
+	h := sftpproxy.New(tr, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	data, err := h.Get(ctx, p.Host, p.Port, sshproxy.Credentials{
+		Username:   p.Username,
+		Password:   p.Password,
+		KeyData:    []byte(p.PrivateKeyPEM),
+		Passphrase: p.Passphrase,
+	}, p.Path)
+	if err != nil {
+		return nil, rpcErr(schema.ErrCodeInternalError, err.Error())
+	}
+	id, err := active.Vault.Put(data, vault.Metadata{
+		ContentType: "application/octet-stream",
+		Target:      p.Host,
+		Skill:       p.Skill,
+		Tags:        p.Tags,
+		CollectionContext: fmt.Sprintf("sftp %s:%s", p.Host, p.Path),
+	})
+	if err != nil {
+		return nil, rpcErr(schema.ErrCodeInternalError, err.Error())
+	}
+	d.auditMCPCall(active, "files.collect", map[string]any{
+		"host":        p.Host,
+		"path":        p.Path,
+		"size":        len(data),
+		"evidence_id": id,
+	})
+	return encodeResult(schema.FilesCollectResult{
+		OK:         true,
+		EvidenceID: id,
+		Size:       int64(len(data)),
+		Path:       p.Path,
+	})
+}
+
+// handleFilesListRemote returns an SFTP directory listing. Read-class
+// operation (no vault write); scope-checked with protocol "sftp".
+func (d *Daemon) handleFilesListRemote(req *schema.JSONRPCRequest) (json.RawMessage, *schema.JSONRPCError) {
+	var p schema.FilesListRemoteParams
+	if err := unmarshalParams(req.Params, &p); err != nil {
+		return nil, err
+	}
+	if p.Host == "" || p.Path == "" {
+		return nil, rpcErr(schema.ErrCodeInvalidParams, "host and path are required")
+	}
+	active, rpcE := d.requireActive()
+	if rpcE != nil {
+		return nil, rpcE
+	}
+	if rpcE := d.checkScope(active, p.Host, "sftp"); rpcE != nil {
+		return nil, rpcE
+	}
+	tr := d.Transport()
+	h := sftpproxy.New(tr, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	entries, err := h.List(ctx, p.Host, p.Port, sshproxy.Credentials{
+		Username:   p.Username,
+		Password:   p.Password,
+		KeyData:    []byte(p.PrivateKeyPEM),
+		Passphrase: p.Passphrase,
+	}, p.Path)
+	if err != nil {
+		return nil, rpcErr(schema.ErrCodeInternalError, err.Error())
+	}
+	out := make([]schema.RemoteFileEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, schema.RemoteFileEntry{
+			Name:  e.Name,
+			Size:  e.Size,
+			Mode:  e.Mode,
+			IsDir: e.IsDir,
+		})
+	}
+	d.auditMCPCall(active, "files.list_remote", map[string]any{
+		"host":  p.Host,
+		"path":  p.Path,
+		"count": len(entries),
+	})
+	return encodeResult(schema.FilesListRemoteResult{OK: true, Entries: out})
 }
 
 // handleEvidenceTag merges tags into an existing evidence item's metadata.
