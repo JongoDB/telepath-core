@@ -319,6 +319,8 @@ type TransportStatusResult struct {
 
 const (
 	MethodSSHExec         = "ssh.exec"
+	MethodWinRMPowerShell = "winrm.powershell"
+	MethodWinRMCmd        = "winrm.cmd"
 	MethodHTTPRequest     = "http.request"
 	MethodFilesStore      = "files.store_synthesized"
 	MethodFilesGet        = "files.get_evidence"
@@ -352,6 +354,33 @@ type SSHExecResult struct {
 	DurationMs  int64  `json:"duration_ms"`
 	EvidenceID  string `json:"evidence_id,omitempty"`
 	Truncated   bool   `json:"truncated,omitempty"`
+}
+
+// WinRMExecParams is the input for MethodWinRMPowerShell and MethodWinRMCmd.
+// Default Port: 5985 (HTTP) or 5986 (HTTPS) per the HTTPS flag. Basic
+// username+password auth is the v0.1 shape; NTLM/Kerberos follow in v0.2.
+type WinRMExecParams struct {
+	Host       string `json:"host"`
+	Port       int    `json:"port,omitempty"`
+	HTTPS      bool   `json:"https,omitempty"`
+	Insecure   bool   `json:"insecure,omitempty"` // skip TLS verify
+	Username   string `json:"username"`
+	Password   string `json:"password,omitempty"`
+	Command    string `json:"command"`
+	Stdin      string `json:"stdin,omitempty"` // for cmd variant
+	TimeoutSec int    `json:"timeout_seconds,omitempty"`
+}
+
+// WinRMExecResult is the output. Identical shape to SSHExecResult so hook
+// libs can share code for remote-command return handling.
+type WinRMExecResult struct {
+	OK         bool   `json:"ok"`
+	Stdout     []byte `json:"stdout,omitempty"`
+	Stderr     []byte `json:"stderr,omitempty"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMs int64  `json:"duration_ms"`
+	EvidenceID string `json:"evidence_id,omitempty"`
+	Truncated  bool   `json:"truncated,omitempty"`
 }
 
 // HTTPRequestParams is the input for MethodHTTPRequest.

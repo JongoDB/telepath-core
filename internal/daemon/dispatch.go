@@ -16,9 +16,11 @@ import (
 	"github.com/fsc/telepath-core/internal/hooks"
 	"github.com/fsc/telepath-core/internal/keys"
 	"github.com/fsc/telepath-core/internal/notes"
+	"github.com/fsc/telepath-core/internal/proxy"
 	"github.com/fsc/telepath-core/internal/proxy/httpproxy"
 	"github.com/fsc/telepath-core/internal/proxy/sftpproxy"
 	"github.com/fsc/telepath-core/internal/proxy/sshproxy"
+	"github.com/fsc/telepath-core/internal/proxy/winrmproxy"
 	"github.com/fsc/telepath-core/internal/rendering"
 	"github.com/fsc/telepath-core/internal/transport"
 	"github.com/fsc/telepath-core/internal/vault"
@@ -71,6 +73,10 @@ func (d *Daemon) dispatch(ctx context.Context, req *schema.JSONRPCRequest) (json
 		return d.handleTransportStatus(req)
 	case schema.MethodSSHExec:
 		return d.handleSSHExec(req)
+	case schema.MethodWinRMPowerShell:
+		return d.handleWinRMExec(req, true)
+	case schema.MethodWinRMCmd:
+		return d.handleWinRMExec(req, false)
 	case schema.MethodHTTPRequest:
 		return d.handleHTTPRequest(req)
 	case schema.MethodFilesStore:
@@ -613,6 +619,83 @@ func (d *Daemon) handleSSHExec(req *schema.JSONRPCRequest) (json.RawMessage, *sc
 		}
 	}
 	d.auditMCPCall(active, "ssh.exec", map[string]any{
+		"host":      p.Host,
+		"command":   p.Command,
+		"exit_code": res.ExitCode,
+	})
+	return encodeResult(out)
+}
+
+// handleWinRMExec dispatches both PowerShell and cmd.exe variants. The
+// isPowerShell flag is the only difference at the protocol seam. Scope is
+// checked with protocol "winrm" — operators list it in allowed_protocols
+// to opt into Windows remote command execution, same opt-in shape as ssh.
+func (d *Daemon) handleWinRMExec(req *schema.JSONRPCRequest, isPowerShell bool) (json.RawMessage, *schema.JSONRPCError) {
+	var p schema.WinRMExecParams
+	if err := unmarshalParams(req.Params, &p); err != nil {
+		return nil, err
+	}
+	active, rpcE := d.requireActive()
+	if rpcE != nil {
+		return nil, rpcE
+	}
+	if rpcE := d.checkScope(active, p.Host, "winrm"); rpcE != nil {
+		return nil, rpcE
+	}
+	h := winrmproxy.New(d.Transport())
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutFromSec(p.TimeoutSec, 60*time.Second))
+	defer cancel()
+	cfg := winrmproxy.Config{
+		Host:       p.Host,
+		Port:       p.Port,
+		HTTPS:      p.HTTPS,
+		Insecure:   p.Insecure,
+		Username:   p.Username,
+		Password:   p.Password,
+		TimeoutSec: p.TimeoutSec,
+	}
+	var res proxy.ExecResult
+	var err error
+	if isPowerShell {
+		res, err = h.PowerShell(ctx, cfg, p.Command)
+	} else {
+		res, err = h.Cmd(ctx, cfg, p.Command, p.Stdin)
+	}
+	if err != nil {
+		return nil, rpcErr(schema.ErrCodeInternalError, err.Error())
+	}
+	out := schema.WinRMExecResult{
+		OK:         true,
+		Stdout:     res.Stdout,
+		Stderr:     res.Stderr,
+		ExitCode:   res.ExitCode,
+		DurationMs: res.DurationMs,
+	}
+	// Redact + vault large outputs, mirroring ssh.exec.
+	redacted, _ := hooks.RedactCredentials(string(res.Stdout))
+	if len(redacted) > 1<<20 && active.Vault != nil {
+		kind := "winrm_cmd"
+		if isPowerShell {
+			kind = "winrm_powershell"
+		}
+		id, verr := active.Vault.Put([]byte(redacted), vault.Metadata{
+			ContentType: "text/plain",
+			Target:      p.Host,
+			Command:     p.Command,
+			SessionID:   "",
+			Tags:        []string{kind},
+		})
+		if verr == nil {
+			out.EvidenceID = id
+			out.Stdout = nil
+			out.Truncated = true
+		}
+	}
+	method := "winrm.cmd"
+	if isPowerShell {
+		method = "winrm.powershell"
+	}
+	d.auditMCPCall(active, method, map[string]any{
 		"host":      p.Host,
 		"command":   p.Command,
 		"exit_code": res.ExitCode,
