@@ -90,7 +90,7 @@ For a single tag push, all of this happens automatically:
   - `ubuntu-latest` → linux/amd64 (+ `.deb` + `.rpm` via nfpm)
   - `ubuntu-latest` → linux/arm64
   - `macos-latest` → darwin/arm64 (Apple Silicon)
-  - `macos-13`     → darwin/amd64 (Intel Mac)
+  - `macos-latest` → darwin/amd64 (Intel Mac — cross-compiled with CGO=0)
   - `windows-latest` → windows/amd64
 - **SBOM** (`syft`, CycloneDX JSON) per binary → attached to the release
 - **Direct upload** of every artifact to the GitHub Release via
@@ -104,13 +104,32 @@ For a single tag push, all of this happens automatically:
     Fulcio/Rekor; produces `SHA256SUMS.sig` + `SHA256SUMS.crt`
   - `SHA256SUMS` + signature + cert attached; Release body set from git-cliff
 
-A complete release page has:
+A complete release page has 15 assets:
 
 - 5 binary archives (4 `.tar.gz` + 1 `.zip`)
 - 5 `.sbom.json`
 - 1 `.deb` + 1 `.rpm`
 - `SHA256SUMS` + `SHA256SUMS.sig` + `SHA256SUMS.crt`
-= 14 assets total.
+
+### How operators install
+
+Two paths, both documented in the Release body's **Quick install** block:
+
+1. **One-liner** (macOS + Linux):
+   ```sh
+   curl -sSL https://raw.githubusercontent.com/JongoDB/telepath-core/main/scripts/install.sh | sh
+   ```
+   `scripts/install.sh` probes `uname -s` / `uname -m`, resolves the latest
+   tag via the GitHub Releases API, downloads the matching tarball,
+   extracts it to a temp dir, and `exec`s `./telepath install`.
+   `VERSION=vX.Y.Z` pins an explicit tag.
+2. **Manual**: download the platform-specific `.tar.gz` (or `.zip` on
+   Windows) from the Release page, extract, run `./telepath install`.
+
+`telepath install` copies the running binary to `~/.local/bin/telepath`
+(Unix) or `%LOCALAPPDATA%\telepath\bin\telepath.exe` (Windows), detects if
+the target dir is already on PATH, and prints the shell-specific export
+line only when needed.
 
 ### If a release run fails mid-flight
 

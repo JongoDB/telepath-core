@@ -6,16 +6,22 @@
 # Output is set as the GitHub Release body.
 
 [changelog]
-# Header: one-time intro, rendered at the top of the release body.
 header = ""
 
-# Body: rendered for each version in range. --latest scopes to one tag.
 body = """
 {% if version -%}
 ## {{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}
 {% else -%}
 ## Unreleased
 {% endif -%}
+
+### Quick install (macOS + Linux)
+
+```sh
+curl -sSL https://raw.githubusercontent.com/JongoDB/telepath-core/main/scripts/install.sh | sh
+```
+
+Or pick a platform-specific asset below and run `./telepath install` from the extracted folder.
 
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | striptags | trim | upper_first }}
@@ -44,15 +50,11 @@ sha256sum -c SHA256SUMS
 CycloneDX SBOMs (`telepath-*.sbom.json`) are attached for every binary.
 """
 
-# Footer runs once at the end of the whole changelog.
 footer = ""
 trim = true
 
 [git]
-# Conventional Commits: `feat:`, `fix:`, `feat(scope)!:`, etc.
 conventional_commits = true
-# filter_unconventional = false means non-conforming commits still appear
-# under "Other", rather than silently disappearing from the notes.
 filter_unconventional = false
 split_commits = false
 
