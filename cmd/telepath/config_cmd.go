@@ -35,10 +35,17 @@ func newConfigShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("operator.name     = %s\n", cfg.Operator.Name)
-			fmt.Printf("operator.email    = %s\n", cfg.Operator.Email)
+			fmt.Printf("operator.name      = %s\n", cfg.Operator.Name)
+			fmt.Printf("operator.email     = %s\n", cfg.Operator.Email)
 			fmt.Printf("claude.auth_method = %s\n", cfg.Claude.AuthMethod)
 			fmt.Printf("config_path        = %s\n", config.DefaultPath())
+			// Surface the keystore backend so operators can see whether
+			// secrets live in the OS keychain or the file fallback.
+			if store, err := keys.Open(); err == nil {
+				fmt.Printf("keystore_backend   = %s\n", store.Backend())
+			} else {
+				fmt.Printf("keystore_backend   = (unreachable: %v)\n", err)
+			}
 			return nil
 		},
 	}
@@ -85,23 +92,33 @@ func newConfigInitCmd() *cobra.Command {
 		Use:   "init",
 		Short: "Interactive setup: operator identity + Claude Code auth method",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Choose TUI vs stdin-wizard. Operators usually want the TUI;
-			// pipelines, CI jobs, and automation want non-interactive.
-			if nonInteractive || !stdinIsTerminal() {
-				return runConfigInit(os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
+			// Three-way dispatch:
+			//   - --non-interactive set OR stdin is not a TTY: line-by-line
+			//     prompts, no subprocess calls (skipping `claude setup-token`
+			//     entirely so automation never hangs on a hidden subprompt)
+			//   - otherwise: huh/Bubble Tea TUI
+			//   - if the TUI renderer can't start, fall through to prompts
+			interactive := stdinIsTerminal() && !nonInteractive
+			if !interactive {
+				return runConfigInit(os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr(), configInitOpts{interactive: false})
 			}
 			if err := runConfigInitTUI(cmd.OutOrStdout()); err != nil {
-				// huh returns an error if the terminal can't start the
-				// renderer for any reason. Fall back to the stdin path so
-				// the user is never stuck.
 				fmt.Fprintf(cmd.ErrOrStderr(), "TUI unavailable (%v); falling back to stdin prompts\n", err)
-				return runConfigInit(os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr())
+				return runConfigInit(os.Stdin, cmd.OutOrStdout(), cmd.ErrOrStderr(), configInitOpts{interactive: true})
 			}
 			return nil
 		},
 	}
 	c.Flags().BoolVar(&nonInteractive, "non-interactive", false, "use line-by-line stdin prompts instead of the TUI")
 	return c
+}
+
+// configInitOpts carries the small bit of context the stdin wizard needs
+// from the cobra command layer. Today just whether the runtime is
+// interactive (TTY stdin + user-invoked), which gates subprocess prompts
+// like `claude setup-token`.
+type configInitOpts struct {
+	interactive bool
 }
 
 // stdinIsTerminal reports whether stdin is attached to a terminal. No new
@@ -133,6 +150,7 @@ func runConfigInitTUI(out io.Writer) error {
 	}
 	var token string
 
+	var confirm bool
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewNote().
@@ -169,6 +187,18 @@ func runConfigInitTUI(out io.Writer) error {
 			// itself in a later step (v0.2); v0.1 just records the choice.
 			return method == config.AuthMethodSubscriptionOAuth
 		}),
+		// Confirmation step. The operator can Shift+Tab back through the
+		// groups to review/change values before saying "Save".
+		huh.NewGroup(
+			huh.NewNote().
+				Title("Review").
+				Description("Shift+Tab to go back and change any value. Confirm below to write the config."),
+			huh.NewConfirm().
+				Title("Save configuration?").
+				Affirmative("Save").
+				Negative("Cancel").
+				Value(&confirm),
+		),
 	)
 
 	if err := form.Run(); err != nil {
@@ -176,6 +206,10 @@ func runConfigInitTUI(out io.Writer) error {
 			return errors.New("cancelled")
 		}
 		return err
+	}
+	if !confirm {
+		fmt.Fprintln(out, "cancelled; config not saved.")
+		return nil
 	}
 
 	cfg.Operator.Name = strings.TrimSpace(name)
@@ -206,10 +240,14 @@ func runConfigInitTUI(out io.Writer) error {
 
 // runConfigInit is the wizard. Split out of the cobra RunE so it can be
 // exercised with in-process readers/writers in tests.
-func runConfigInit(in io.Reader, out, errOut io.Writer) error {
+func runConfigInit(in io.Reader, out, errOut io.Writer, opts configInitOpts) error {
 	reader := bufio.NewReader(in)
-	path := config.DefaultPath()
+	// Piped stdin does not echo the user's newline the way a TTY does.
+	// The prompt helper emits a synthetic newline in that case so each
+	// prompt lands on its own line when transcripted.
+	promptEchoesNewline := !stdinIsTerminal()
 
+	path := config.DefaultPath()
 	cfg, err := config.Load(path)
 	if err != nil {
 		return err
@@ -217,8 +255,8 @@ func runConfigInit(in io.Reader, out, errOut io.Writer) error {
 	fmt.Fprintln(out, "telepath config init — operator identity + Claude Code auth")
 	fmt.Fprintln(out, "Press enter to keep the existing value shown in [brackets].")
 
-	cfg.Operator.Name = prompt(reader, out, "Operator name", cfg.Operator.Name)
-	cfg.Operator.Email = prompt(reader, out, "Operator email", cfg.Operator.Email)
+	cfg.Operator.Name = prompt(reader, out, "Operator name", cfg.Operator.Name, promptEchoesNewline)
+	cfg.Operator.Email = prompt(reader, out, "Operator email", cfg.Operator.Email, promptEchoesNewline)
 
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, "Claude Code auth method:")
@@ -230,7 +268,7 @@ func runConfigInit(in io.Reader, out, errOut io.Writer) error {
 	if cfg.Claude.AuthMethod != "" {
 		def = string(cfg.Claude.AuthMethod)
 	}
-	choice := prompt(reader, out, "Choose [1-3 or name]", def)
+	choice := prompt(reader, out, "Choose [1-3 or name]", def, promptEchoesNewline)
 	method, err := config.NormalizeSelectedMethod(choice)
 	if err != nil {
 		return err
@@ -244,7 +282,7 @@ func runConfigInit(in io.Reader, out, errOut io.Writer) error {
 
 	switch method {
 	case config.AuthMethodOAuthToken:
-		token, err := captureClaudeOAuthToken(reader, out, errOut)
+		token, err := captureClaudeOAuthToken(reader, out, errOut, opts, promptEchoesNewline)
 		if err != nil {
 			return err
 		}
@@ -253,7 +291,7 @@ func runConfigInit(in io.Reader, out, errOut io.Writer) error {
 		}
 		fmt.Fprintln(out, "stored CLAUDE_CODE_OAUTH_TOKEN in keystore")
 	case config.AuthMethodAPIKey:
-		key := prompt(reader, out, "ANTHROPIC_API_KEY (input hidden)", "")
+		key := prompt(reader, out, "ANTHROPIC_API_KEY (input hidden)", "", promptEchoesNewline)
 		if key == "" {
 			return fmt.Errorf("API key required")
 		}
@@ -262,9 +300,9 @@ func runConfigInit(in io.Reader, out, errOut io.Writer) error {
 		}
 		fmt.Fprintln(out, "stored ANTHROPIC_API_KEY in keystore")
 	case config.AuthMethodSubscriptionOAuth:
-		fmt.Fprintln(out, "subscription OAuth setup not wired in v0.1 week 1-2; see docs/CLAUDE_OAUTH.md.")
-		fmt.Fprintln(out, "for now, the auth method is recorded but no token was captured. Re-run `telepath config init`")
-		fmt.Fprintln(out, "once the PKCE flow lands, or use --method api-key as a stopgap.")
+		fmt.Fprintln(out, "subscription OAuth capture is not wired in v0.1; see docs/CLAUDE_OAUTH.md for the design.")
+		fmt.Fprintln(out, "The method is recorded but no token was captured. Re-run `telepath config init` when")
+		fmt.Fprintln(out, "the PKCE flow lands, or use --method api-key as a stopgap.")
 	}
 
 	if err := config.Save(path, cfg); err != nil {
@@ -274,32 +312,38 @@ func runConfigInit(in io.Reader, out, errOut io.Writer) error {
 	return nil
 }
 
-// captureClaudeOAuthToken offers two paths: (1) invoke `claude setup-token`
-// if the binary is on PATH; (2) prompt the operator to paste a token.
-func captureClaudeOAuthToken(r *bufio.Reader, out, errOut io.Writer) (string, error) {
-	if _, err := exec.LookPath("claude"); err == nil {
-		choice := strings.ToLower(strings.TrimSpace(prompt(r, out, "Run `claude setup-token` for you? [Y/n]", "y")))
-		if choice == "" || choice == "y" || choice == "yes" {
-			cmd := exec.Command("claude", "setup-token")
-			cmd.Stdin = os.Stdin
-			cmd.Stdout = out
-			cmd.Stderr = errOut
-			if err := cmd.Run(); err != nil {
-				return "", fmt.Errorf("claude setup-token: %w", err)
+// captureClaudeOAuthToken either offers to shell out to `claude
+// setup-token` (only when interactive — scripts + CI never spawn an
+// interactive subprocess) or simply prompts the operator to paste the
+// token.
+func captureClaudeOAuthToken(r *bufio.Reader, out, errOut io.Writer, opts configInitOpts, echoNewline bool) (string, error) {
+	if opts.interactive {
+		if _, err := exec.LookPath("claude"); err == nil {
+			choice := strings.ToLower(strings.TrimSpace(prompt(r, out, "Run `claude setup-token` for you? [Y/n]", "y", echoNewline)))
+			if choice == "" || choice == "y" || choice == "yes" {
+				cmd := exec.Command("claude", "setup-token")
+				cmd.Stdin = os.Stdin
+				cmd.Stdout = out
+				cmd.Stderr = errOut
+				if err := cmd.Run(); err != nil {
+					return "", fmt.Errorf("claude setup-token: %w", err)
+				}
+				fmt.Fprintln(out, "(paste the token below)")
 			}
-			fmt.Fprintln(out, "(paste the token below)")
 		}
 	}
-	token := strings.TrimSpace(prompt(r, out, "CLAUDE_CODE_OAUTH_TOKEN", ""))
+	token := strings.TrimSpace(prompt(r, out, "CLAUDE_CODE_OAUTH_TOKEN", "", echoNewline))
 	if token == "" {
 		return "", fmt.Errorf("token required")
 	}
 	return token, nil
 }
 
-// prompt asks the user for a single line of input. If the user presses Enter
-// without typing anything and def is non-empty, def is returned.
-func prompt(r *bufio.Reader, out io.Writer, label, def string) string {
+// prompt asks the user for a single line of input. Default value returned
+// when the user presses enter without typing. echoNewline=true emits a
+// trailing newline when the input was empty — compensates for piped stdin
+// not echoing the user's enter key (TTYs always do, so they pass false).
+func prompt(r *bufio.Reader, out io.Writer, label, def string, echoNewline bool) string {
 	if def == "" {
 		fmt.Fprintf(out, "%s: ", label)
 	} else {
@@ -307,9 +351,15 @@ func prompt(r *bufio.Reader, out io.Writer, label, def string) string {
 	}
 	line, err := r.ReadString('\n')
 	if err != nil && line == "" {
+		if echoNewline {
+			fmt.Fprintln(out)
+		}
 		return def
 	}
 	line = strings.TrimRight(line, "\r\n")
+	if echoNewline {
+		fmt.Fprintln(out)
+	}
 	if line == "" {
 		return def
 	}
