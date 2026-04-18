@@ -154,7 +154,42 @@ func (d *Daemon) handleApprovalClassify(req *schema.JSONRPCRequest) (json.RawMes
 	if err := unmarshalParams(req.Params, &p); err != nil {
 		return nil, err
 	}
-	return encodeResult(hooks.Classify(p.ToolName, p.ToolInput))
+	c := hooks.Classify(p.ToolName, p.ToolInput)
+	// With an active engagement + ROE, the write_actions.policy supersedes
+	// the classifier's default RequiresApproval for write-class actions.
+	// The policy has three shapes:
+	//   - "always" (alias: WritePolicyAlwaysApprove): approve writes without
+	//     prompting — useful for engagements with an already-signed SOW
+	//     covering write-class ops.
+	//   - "require_approval": prompt the operator on every write (default
+	//     when the field is unset or empty).
+	//   - "never": deny writes outright; surface via Blocked=true so hook
+	//     libs that understand the flag short-circuit without prompting.
+	// Read classifications never take the policy branch — there is nothing
+	// to approve or block about a read.
+	if active := d.manager.Active(); active != nil && active.ROE != nil && isWriteClass(c.Class) {
+		switch active.ROE.WriteActions().Policy {
+		case schema.WritePolicyAlwaysApprove:
+			c.RequiresApproval = false
+			c.Reason = "ROE write_actions.policy=always; auto-approved"
+		case schema.WritePolicyNever:
+			c.Blocked = true
+			c.RequiresApproval = true
+			c.Reason = "ROE write_actions.policy=never; blocked"
+		case schema.WritePolicyRequireApproval, "":
+			// Keep the classifier's default (RequiresApproval=true for writes).
+			// Empty policy intentionally falls through — conservative default.
+		}
+	}
+	return encodeResult(c)
+}
+
+// isWriteClass reports whether a classification class is a write variant.
+// Keeping it here (not in the hooks package) avoids circular knowledge
+// about ROE policy in the classifier itself — the classifier stays pure,
+// the daemon layers policy on top.
+func isWriteClass(class string) bool {
+	return class == schema.ClassWriteReversible || class == schema.ClassWriteIrreversibl
 }
 
 func (d *Daemon) handleAuditEmit(req *schema.JSONRPCRequest) (json.RawMessage, *schema.JSONRPCError) {

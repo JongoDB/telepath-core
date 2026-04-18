@@ -331,6 +331,129 @@ allowed_protocols: [ssh, https]
 	}
 }
 
+// setupClassifyROE creates + loads an engagement and applies an ROE with
+// the given write_actions policy. Returns the daemon for subsequent calls.
+func setupClassifyROE(t *testing.T, policy string) *Daemon {
+	t.Helper()
+	d, mgr := newTestDaemon(t)
+	id := "cl-" + policy
+	if policy == "" {
+		id = "cl-default"
+	}
+	if _, err := mgr.Create(engagement.CreateParams{ID: id, ClientName: "C", AssessmentType: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Load(id); err != nil {
+		t.Fatal(err)
+	}
+	roeYAML := fmt.Sprintf(`engagement_id: %s
+version: 1
+in_scope:
+  hosts: ["127.0.0.0/8"]
+allowed_protocols: [ssh, https]
+write_actions:
+  policy: %q
+`, id, policy)
+	if _, err := ipc.Call(d.SocketPath(), schema.MethodEngagementSetROE, schema.EngagementSetROEParams{ID: id, YAML: roeYAML}); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
+func classify(t *testing.T, d *Daemon, tool string, toolInput string) schema.ClassifyResult {
+	t.Helper()
+	res, err := ipc.Call(d.SocketPath(), schema.MethodApprovalClassify, schema.ClassifyParams{
+		ToolName:  tool,
+		ToolInput: json.RawMessage(toolInput),
+	})
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	var out schema.ClassifyResult
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestDaemon_ApprovalClassify_WritePolicyAlwaysApproves(t *testing.T) {
+	t.Parallel()
+	d := setupClassifyROE(t, schema.WritePolicyAlwaysApprove)
+	// Bash "rm -rf" would normally RequiresApproval=true; policy=always flips it.
+	out := classify(t, d, "Bash", `{"command":"rm -rf /tmp/x"}`)
+	if out.Class != schema.ClassWriteIrreversibl {
+		t.Errorf("class = %q, want write_irreversible", out.Class)
+	}
+	if out.RequiresApproval {
+		t.Errorf("RequiresApproval=true despite policy=always: %+v", out)
+	}
+	if out.Blocked {
+		t.Errorf("Blocked=true despite policy=always: %+v", out)
+	}
+}
+
+func TestDaemon_ApprovalClassify_WritePolicyRequireApproval(t *testing.T) {
+	t.Parallel()
+	d := setupClassifyROE(t, schema.WritePolicyRequireApproval)
+	out := classify(t, d, "Bash", `{"command":"rm -rf /tmp/x"}`)
+	if !out.RequiresApproval {
+		t.Errorf("expected require_approval, got %+v", out)
+	}
+	if out.Blocked {
+		t.Errorf("Blocked=true despite policy=require_approval: %+v", out)
+	}
+}
+
+func TestDaemon_ApprovalClassify_WritePolicyNeverBlocks(t *testing.T) {
+	t.Parallel()
+	d := setupClassifyROE(t, schema.WritePolicyNever)
+	out := classify(t, d, "Bash", `{"command":"rm -rf /tmp/x"}`)
+	if !out.Blocked {
+		t.Errorf("expected Blocked=true for policy=never, got %+v", out)
+	}
+	// RequiresApproval should also be true — fail-closed for hook libs that
+	// don't yet read the Blocked flag.
+	if !out.RequiresApproval {
+		t.Errorf("expected RequiresApproval=true alongside Blocked: %+v", out)
+	}
+}
+
+func TestDaemon_ApprovalClassify_ReadsUnaffectedByPolicy(t *testing.T) {
+	t.Parallel()
+	// A read-class action must never require approval regardless of policy.
+	for _, policy := range []string{schema.WritePolicyAlwaysApprove, schema.WritePolicyRequireApproval, schema.WritePolicyNever} {
+		policy := policy
+		t.Run(policy, func(t *testing.T) {
+			t.Parallel()
+			d := setupClassifyROE(t, policy)
+			out := classify(t, d, "Read", `{"file_path":"/tmp/x"}`)
+			if out.RequiresApproval || out.Blocked {
+				t.Errorf("policy=%s: read should be free, got %+v", policy, out)
+			}
+		})
+	}
+}
+
+func TestDaemon_ApprovalClassify_NoROE_UsesClassifierDefault(t *testing.T) {
+	t.Parallel()
+	// Without an ROE, there's no policy to apply — the classifier's own
+	// RequiresApproval wins.
+	d, mgr := newTestDaemon(t)
+	if _, err := mgr.Create(engagement.CreateParams{ID: "cl-noroe", ClientName: "C", AssessmentType: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Load("cl-noroe"); err != nil {
+		t.Fatal(err)
+	}
+	out := classify(t, d, "Bash", `{"command":"rm -rf /tmp/x"}`)
+	if !out.RequiresApproval {
+		t.Errorf("expected classifier default RequiresApproval=true, got %+v", out)
+	}
+	if out.Blocked {
+		t.Errorf("no ROE, no block: %+v", out)
+	}
+}
+
 func TestDaemon_TransportLifecycle(t *testing.T) {
 	t.Parallel()
 	d, _ := newTestDaemon(t)

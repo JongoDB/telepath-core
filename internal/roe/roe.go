@@ -101,6 +101,11 @@ func fromRaw(raw schema.RulesOfEngagement) (*ROE, error) {
 // Raw returns the underlying schema struct for serialization.
 func (r *ROE) Raw() schema.RulesOfEngagement { return r.raw }
 
+// WriteActions returns the ROE's write_actions policy. Empty WriteActions
+// (zero value) is returned for an unset field — callers treat Policy==""
+// as the conservative "require_approval" default.
+func (r *ROE) WriteActions() schema.WriteActions { return r.raw.WriteActions }
+
 // EngagementID returns the owning engagement ID.
 func (r *ROE) EngagementID() string { return r.raw.EngagementID }
 

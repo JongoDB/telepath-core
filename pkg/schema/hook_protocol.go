@@ -97,13 +97,20 @@ type ClassifyParams struct {
 }
 
 // ClassifyResult is the output for MethodApprovalClassify.
+//
+// Blocked means the ROE's write_actions.policy forbids this action
+// outright — the hook lib should deny without prompting. RequiresApproval
+// covers the "ask operator" case; the two are independent (a Blocked
+// result may also set RequiresApproval=true so hook libs that don't
+// understand Blocked yet still default to the safer "prompt" behavior).
 type ClassifyResult struct {
-	OK                bool   `json:"ok"`
-	Class             string `json:"class"`
-	RequiresApproval  bool   `json:"requires_approval"`
-	Reason            string `json:"reason,omitempty"`
-	BlackoutAdjacent  bool   `json:"blackout_adjacent,omitempty"`
-	NovelHost         bool   `json:"novel_host,omitempty"`
+	OK               bool   `json:"ok"`
+	Class            string `json:"class"`
+	RequiresApproval bool   `json:"requires_approval"`
+	Blocked          bool   `json:"blocked,omitempty"`
+	Reason           string `json:"reason,omitempty"`
+	BlackoutAdjacent bool   `json:"blackout_adjacent,omitempty"`
+	NovelHost        bool   `json:"novel_host,omitempty"`
 }
 
 // Action classification values for ClassifyResult.Class.
