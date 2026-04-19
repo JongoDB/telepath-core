@@ -76,7 +76,8 @@ func classifyMCP(tool string, toolInput json.RawMessage) schema.ClassifyResult {
 		return schema.ClassifyResult{OK: true, Class: schema.ClassReadEnumeration, Reason: "operator-side artifact; no client-system write"}
 	case strings.Contains(low, "store_synthesized"):
 		return schema.ClassifyResult{OK: true, Class: schema.ClassReadEnumeration, Reason: "synthesized artifact stored locally"}
-	case strings.Contains(low, "oauth_begin"), strings.Contains(low, "oauth_status"):
+	case strings.Contains(low, "oauth_begin"), strings.Contains(low, "oauth_status"), strings.Contains(low, "oauth_complete"),
+		strings.HasSuffix(low, "oauth.begin"), strings.HasSuffix(low, "oauth.status"), strings.HasSuffix(low, "oauth.complete"):
 		return schema.ClassifyResult{OK: true, Class: schema.ClassReadEnumeration}
 	}
 	return schema.ClassifyResult{OK: true, Class: schema.ClassUnknown, Reason: "unrecognized MCP tool"}

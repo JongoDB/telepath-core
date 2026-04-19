@@ -328,6 +328,9 @@ const (
 	MethodFilesListRemote = "files.list_remote"  // SFTP directory listing
 	MethodEvidenceSearch  = "evidence.search"
 	MethodEvidenceTag     = "evidence.tag"
+	MethodOAuthBegin      = "oauth.begin"
+	MethodOAuthComplete   = "oauth.complete"
+	MethodOAuthStatus     = "oauth.status"
 )
 
 // SSHExecParams is the input for MethodSSHExec.
@@ -700,4 +703,65 @@ type EngagementExportResult struct {
 	OutDir            string   `json:"out_dir"`
 	Artifacts         []string `json:"artifacts"`
 	OperatorPublicKey string   `json:"operator_public_key"`
+}
+
+// --- SaaS OAuth (third-party providers: M365, Google, Salesforce) ---
+
+// OAuthBeginParams starts a PKCE flow for the given provider. Tenant is a
+// caller-chosen label that scopes the keystore slots — operators with two
+// engagements against different M365 tenants pass distinct tenants to
+// avoid collision. Empty tenant defaults to "default".
+type OAuthBeginParams struct {
+	Provider string `json:"provider"` // m365|google|salesforce
+	Tenant   string `json:"tenant,omitempty"`
+	ClientID string `json:"client_id,omitempty"` // override config if set
+}
+
+// OAuthBeginResult carries the URL the operator opens in a browser plus
+// the session_id they pass back to OAuthComplete. Sessions live in
+// daemon memory with a 15-minute TTL; past that, begin must restart.
+type OAuthBeginResult struct {
+	OK        bool   `json:"ok"`
+	SessionID string `json:"session_id"`
+	AuthURL   string `json:"auth_url"`
+	ExpiresAt string `json:"expires_at"` // session expiry, RFC3339
+}
+
+// OAuthCompleteParams takes the session_id from OAuthBegin and the
+// operator's paste-back (bare code, "code#state", or full callback URL).
+type OAuthCompleteParams struct {
+	SessionID string `json:"session_id"`
+	Input     string `json:"input"`
+}
+
+// OAuthCompleteResult describes the minted credential. CredentialID is
+// the keystore slot prefix (e.g., "oauth.m365.acme-prod") — the
+// access_token, refresh_token, and expires_at suffixes live under it.
+type OAuthCompleteResult struct {
+	OK           bool   `json:"ok"`
+	CredentialID string `json:"credential_id"`
+	Provider     string `json:"provider"`
+	Tenant       string `json:"tenant"`
+	ExpiresAt    string `json:"expires_at"`
+	Scope        string `json:"scope,omitempty"`
+}
+
+// OAuthStatusParams optionally filters to a specific provider/tenant.
+type OAuthStatusParams struct {
+	Provider string `json:"provider,omitempty"`
+	Tenant   string `json:"tenant,omitempty"`
+}
+
+// OAuthStatusResult lists the connections currently in the keystore.
+type OAuthStatusResult struct {
+	OK          bool              `json:"ok"`
+	Connections []OAuthConnection `json:"connections"`
+}
+
+// OAuthConnection is one connected SaaS identity.
+type OAuthConnection struct {
+	Provider  string `json:"provider"`
+	Tenant    string `json:"tenant"`
+	ExpiresAt string `json:"expires_at"`
+	Expired   bool   `json:"expired"`
 }

@@ -30,6 +30,7 @@ const (
 type Config struct {
 	Operator OperatorConfig `yaml:"operator"`
 	Claude   ClaudeConfig   `yaml:"claude"`
+	OAuth    OAuthConfig    `yaml:"oauth,omitempty"`
 }
 
 // OperatorConfig holds operator identity metadata.
@@ -42,6 +43,27 @@ type OperatorConfig struct {
 // The actual secret lives in the keystore.
 type ClaudeConfig struct {
 	AuthMethod AuthMethod `yaml:"auth_method,omitempty"`
+}
+
+// OAuthConfig holds per-provider OAuth 2.0 client registrations. The
+// ClientID is public information (lives safely in the yaml file); any
+// confidential client_secret belongs in the keystore under the
+// oauth.<provider>.client_secret slot and is loaded from there at token
+// exchange time. v0.1 is public-client-only — PKCE authenticates without
+// a secret; add secret-loading if we need confidential clients in v0.2.
+type OAuthConfig struct {
+	M365       ProviderConfig `yaml:"m365,omitempty"`
+	Google     ProviderConfig `yaml:"google,omitempty"`
+	Salesforce ProviderConfig `yaml:"salesforce,omitempty"`
+}
+
+// ProviderConfig is the per-provider client registration. An operator
+// registers an app in each SaaS tenant, copies the client_id here, and
+// (optionally) overrides the default redirect_uri if their app doesn't
+// accept the default http://localhost:0/callback.
+type ProviderConfig struct {
+	ClientID    string `yaml:"client_id,omitempty"`
+	RedirectURI string `yaml:"redirect_uri,omitempty"`
 }
 
 // DefaultPath returns ~/.telepath/config.yaml.
@@ -142,6 +164,33 @@ const (
 	// subcommand reads this before picking a token and refreshes when it
 	// falls within a 5-minute pre-expiry window.
 	KeystoreClaudeSubExpiresAt = "claude.subscription_expires_at"
+)
+
+// Default tenant label used when a caller doesn't supply one on an
+// OAuth begin/complete call. Operators working against a single SaaS
+// tenant per provider never need to set this; operators with multiple
+// tenants supply distinct labels so the slots don't collide.
+const OAuthDefaultTenant = "default"
+
+// OAuthKeystorePrefix returns the keystore slot prefix for the given
+// provider + tenant. Actual slot names append `.access_token`,
+// `.refresh_token`, `.expires_at`, `.scope` to this prefix. Callers
+// treat empty tenant as the default label — single source of truth.
+func OAuthKeystorePrefix(provider, tenant string) string {
+	if tenant == "" {
+		tenant = OAuthDefaultTenant
+	}
+	return "oauth." + provider + "." + tenant
+}
+
+// Suffixes used under the OAuthKeystorePrefix. Kept here as constants so
+// the daemon, the status handler, and future refresh-on-use paths all
+// read from the same names.
+const (
+	OAuthKeystoreSuffixAccessToken  = ".access_token"
+	OAuthKeystoreSuffixRefreshToken = ".refresh_token"
+	OAuthKeystoreSuffixExpiresAt    = ".expires_at"
+	OAuthKeystoreSuffixScope        = ".scope"
 )
 
 // KeystoreSlotForMethod returns the primary keystore slot name for the

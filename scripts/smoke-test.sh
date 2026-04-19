@@ -198,6 +198,14 @@ echo ">> 13. Evidence search"
 json_rpc "evidence.search" '{"tag":"interview"}' >"$ROOT/es.out"
 check "evidence found by tag" grep -q '"items":\[' "$ROOT/es.out"
 
+echo ">> 12b. OAuth status (no connections yet)"
+json_rpc "oauth.status" '{}' >"$ROOT/oauth_empty.out"
+check "status OK with empty list" grep -q '"connections":\[\]' "$ROOT/oauth_empty.out"
+
+echo ">> 12c. OAuth begin without configured client_id (expect error)"
+json_rpc "oauth.begin" '{"provider":"m365"}' >"$ROOT/oauth_nocfg.out"
+check "missing client_id errors clearly" grep -q 'client_id' "$ROOT/oauth_nocfg.out"
+
 echo ">> 13b. Evidence tag (merge + dedup)"
 EV_ID=$(python3 -c "import json,sys; d=json.load(open('$ROOT/es.out')); sys.stdout.write(d['result']['items'][0]['evidence_id'])" 2>/dev/null)
 json_rpc "evidence.tag" "$(printf '{"evidence_id":"%s","tags":["critical","interview"]}' "$EV_ID")" >"$ROOT/et.out"

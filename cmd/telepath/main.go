@@ -56,6 +56,7 @@ func main() {
 		addToGroup(newUpdateCmd(), "setup"),
 		addToGroup(newUninstallCmd(), "setup"),
 		addToGroup(newConfigCmd(), "setup"),
+		addToGroup(newOAuthCmd(), "setup"),
 		addToGroup(newDoctorCmd(), "setup"),
 		addToGroup(newVerifyConfigCmd(), "setup"),
 		addToGroup(newDaemonCmd(), "ops"),

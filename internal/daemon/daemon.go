@@ -21,6 +21,7 @@ import (
 	"github.com/fsc/telepath-core/internal/engagement"
 	"github.com/fsc/telepath-core/internal/ipc"
 	"github.com/fsc/telepath-core/internal/keys"
+	"github.com/fsc/telepath-core/internal/oauth/saas"
 	"github.com/fsc/telepath-core/internal/transport"
 )
 
@@ -45,6 +46,10 @@ type Config struct {
 	// KeyStore overrides the keystore backend. When nil, keys.Open is
 	// called (env-var-driven selection).
 	KeyStore keys.Store
+	// ConfigPath overrides ~/.telepath/config.yaml. Used by tests so
+	// they don't reach into the developer's real HOME; production leaves
+	// this empty and handlers fall back to config.DefaultPath().
+	ConfigPath string
 	// Logger overrides the logger. When nil, a text handler writing to
 	// stderr is used.
 	Logger *slog.Logger
@@ -67,7 +72,30 @@ type Daemon struct {
 	transportMu sync.RWMutex
 	transport   transport.Transport
 
+	// oauthSessions holds in-flight SaaS OAuth PKCE sessions between the
+	// oauth.begin call (returns auth URL) and oauth.complete (takes the
+	// paste-back code). Keyed by session_id; entries live in memory only
+	// and expire after oauthSessionTTL — reboot or missed paste means the
+	// operator restarts the flow.
+	oauthMu       sync.Mutex
+	oauthSessions map[string]*oauthPendingSession
+
 	started bool
+}
+
+// oauthSessionTTL is how long a pending PKCE session remains valid.
+// Long enough for an operator to open a browser, sign in with MFA, and
+// paste back; short enough that a forgotten session doesn't linger
+// forever.
+const oauthSessionTTL = 15 * time.Minute
+
+// oauthPendingSession is one in-flight PKCE flow.
+type oauthPendingSession struct {
+	sess      *saas.Session
+	provider  string
+	tenant    string
+	clientID  string
+	createdAt time.Time
 }
 
 // New constructs a Daemon, resolving defaults and loading the operator's
@@ -107,11 +135,12 @@ func New(cfg Config) (*Daemon, error) {
 	mgr := engagement.NewManager(filepath.Join(cfg.RootDir, "engagements"), store, signer)
 
 	return &Daemon{
-		cfg:     cfg,
-		logger:  cfg.Logger,
-		keys:    store,
-		signer:  signer,
-		manager: mgr,
+		cfg:           cfg,
+		logger:        cfg.Logger,
+		keys:          store,
+		signer:        signer,
+		manager:       mgr,
+		oauthSessions: map[string]*oauthPendingSession{},
 	}, nil
 }
 
