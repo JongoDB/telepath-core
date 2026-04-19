@@ -50,11 +50,17 @@ func newDoctorCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Non-fatal checks; we report results line-by-line and always
 			// exit 0 so the command is useful in a pipe even when the
-			// daemon isn't running.
+			// daemon isn't running. Order is deliberate: environment first
+			// (keystore/config/claude/pandoc), then daemon-dependent checks
+			// (daemon, engagement, oauth) — so operators reading top-down
+			// understand whether a DOWN daemon is the cause of later warns.
 			checkKeystore(cmd)
 			checkConfig(cmd)
 			checkClaudeBinary(cmd)
+			checkPandoc(cmd)
 			checkDaemon(cmd)
+			checkActiveEngagement(cmd)
+			checkOAuthConnections(cmd)
 			return nil
 		},
 	}
@@ -133,6 +139,57 @@ func checkDaemon(cmd *cobra.Command) {
 		return
 	}
 	ok(cmd, "daemon", fmt.Sprintf("pid %d, version %s", pid, res.Version))
+}
+
+// checkPandoc flags whether the optional DOCX/PDF/PPTX deliverables
+// will be produced by engagement export. Pandoc absent is a WARN, not a
+// FAIL — the Markdown report is always the canonical deliverable.
+func checkPandoc(cmd *cobra.Command) {
+	if _, err := exec.LookPath("pandoc"); err != nil {
+		warn(cmd, "pandoc", "not on PATH — engagement export will skip DOCX/PDF/PPTX (Markdown still produced)")
+		return
+	}
+	ok(cmd, "pandoc", "on PATH — DOCX/PDF/PPTX deliverables enabled")
+}
+
+// checkActiveEngagement reports whether an engagement is currently
+// loaded. Not an error either way; operators on a fresh daemon see
+// "none loaded" and those mid-engagement see the ID + status.
+func checkActiveEngagement(cmd *cobra.Command) {
+	var res schema.EngagementGetResult
+	if err := rpc(schema.MethodEngagementGet, nil, &res); err != nil {
+		// Daemon unreachable — already flagged by checkDaemon. Skip.
+		return
+	}
+	if res.Engagement == nil {
+		warn(cmd, "active engagement", "none loaded — run `telepath engagement load <id>` before starting Claude Code")
+		return
+	}
+	e := res.Engagement
+	ok(cmd, "active engagement", fmt.Sprintf("%s (client=%s, status=%s)", e.ID, e.ClientName, e.Status))
+}
+
+// checkOAuthConnections lists SaaS connections the operator has made,
+// flagging expired ones. An empty list is INFO-level (not every
+// engagement needs SaaS access).
+func checkOAuthConnections(cmd *cobra.Command) {
+	var res schema.OAuthStatusResult
+	if err := rpc(schema.MethodOAuthStatus, schema.OAuthStatusParams{}, &res); err != nil {
+		// Same as above — daemon down already flagged.
+		return
+	}
+	if len(res.Connections) == 0 {
+		ok(cmd, "oauth connections", "none — run `telepath oauth begin <provider>` if a SaaS-backed engagement")
+		return
+	}
+	for _, c := range res.Connections {
+		label := fmt.Sprintf("oauth.%s/%s", c.Provider, c.Tenant)
+		if c.Expired {
+			warn(cmd, label, fmt.Sprintf("EXPIRED at %s — re-run `telepath oauth begin %s --tenant %s`", c.ExpiresAt, c.Provider, c.Tenant))
+			continue
+		}
+		ok(cmd, label, fmt.Sprintf("live, expires %s", c.ExpiresAt))
+	}
 }
 
 // silence unused import warnings if json drops out of checks later.

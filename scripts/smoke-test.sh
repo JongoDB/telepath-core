@@ -340,6 +340,9 @@ check "transport down" grep -q "down" "$ROOT/td.out"
 echo ">> 23. Doctor reports healthy"
 "$BIN" doctor >"$ROOT/dr.out" 2>&1
 check "doctor keystore OK" grep -q "keystore" "$ROOT/dr.out"
+check "doctor reports pandoc line" grep -q "pandoc" "$ROOT/dr.out"
+check "doctor reports oauth line" grep -q "oauth connections\|oauth\." "$ROOT/dr.out"
+check "doctor reports active engagement line" grep -q "active engagement" "$ROOT/dr.out"
 
 echo ""
 if (( failures == 0 )); then
