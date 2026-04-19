@@ -48,6 +48,11 @@ html, body {
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 8px var(--accent);
+  animation: brand-pulse 2.5s ease-in-out infinite;
+}
+@keyframes brand-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.55; transform: scale(0.9); }
 }
 .brand-name { font-family: var(--mono); font-weight: 600; letter-spacing: 0.03em; }
 
@@ -120,7 +125,9 @@ main {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
+  transition: border-color 0.2s ease, transform 0.2s ease;
 }
+.card:hover { border-color: #383848; }
 .card h2 {
   margin: 0;
   font-size: 11px;

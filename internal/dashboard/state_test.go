@@ -170,6 +170,30 @@ func TestAggregate_ExpiredOAuth_SurfacesAsWarning(t *testing.T) {
 	}
 }
 
+func TestAggregate_EmptySlicesAreArraysNotNull(t *testing.T) {
+	t.Parallel()
+	// Wire contract: the frontend renders oauth/recent/warnings as
+	// arrays; null would make JS code paths (reverse(), length) crash.
+	// This test asserts the aggregator initializes them as empty
+	// slices even when nothing ever populates them.
+	f := &fakeFetcher{
+		responses: map[string]json.RawMessage{
+			schema.MethodPing:            rawJSON(schema.PingResult{OK: true, Version: "v"}),
+			schema.MethodEngagementGet:   rawJSON(schema.EngagementGetResult{OK: true}),
+			schema.MethodTransportStatus: rawJSON(schema.TransportStatusResult{OK: true, Status: schema.TransportStatus{State: "down"}}),
+			schema.MethodOAuthStatus:     rawJSON(schema.OAuthStatusResult{OK: true}),
+		},
+	}
+	s := Aggregate(f)
+	raw, _ := json.Marshal(s)
+	out := string(raw)
+	for _, want := range []string{`"oauth":[]`, `"recent_findings":[]`, `"recent_notes":[]`, `"warnings":[]`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %s in JSON, got: %s", want, out)
+		}
+	}
+}
+
 func TestAggregate_NoActiveEngagement_SkipsListRPCs(t *testing.T) {
 	t.Parallel()
 	f := &fakeFetcher{

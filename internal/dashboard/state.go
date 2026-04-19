@@ -105,10 +105,17 @@ const recentLimit = 5
 // best-effort: failures turn into Warnings rather than aborting the
 // whole refresh, so the browser sees partial state even when the
 // daemon is mid-restart or a single subsystem is flaky.
+//
+// All slice fields are initialized to non-nil empty slices so the
+// JSON wire shape is always arrays (never null). The frontend relies
+// on that for zero-special-case rendering.
 func Aggregate(f Fetcher) State {
 	s := State{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		OAuth:       []schema.OAuthConnection{},
+		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+		OAuth:          []schema.OAuthConnection{},
+		RecentFindings: []schema.Finding{},
+		RecentNotes:    []schema.Note{},
+		Warnings:       []string{},
 	}
 
 	// ping → daemon version + PID from the caller's pid file if
