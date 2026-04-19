@@ -1,0 +1,211 @@
+/* telepath dashboard — minimal, dark, scannable.
+   Palette borrows from the Charmbracelet terminal ecosystem the
+   project already uses (huh/bubbletea) for visual continuity with
+   `telepath config init`. */
+
+:root {
+  --bg:         #0d0d12;
+  --bg-card:    #15151d;
+  --bg-elev:   #1c1c26;
+  --border:     #2a2a38;
+  --text:       #e0e0e8;
+  --muted:      #808090;
+  --accent:     #4d9fff;
+  --good:       #4ade80;
+  --warn:       #facc15;
+  --bad:        #f87171;
+  --mono:       ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", "Roboto Mono", Consolas, monospace;
+  --sans:       -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* --- Header -------------------------------------------------------- */
+.app-header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.85rem 1.25rem;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.brand { display: flex; align-items: center; gap: 0.55rem; }
+.brand-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.brand-name { font-family: var(--mono); font-weight: 600; letter-spacing: 0.03em; }
+
+.header-engagement {
+  font-family: var(--mono);
+}
+.header-engagement .eng-id { color: var(--accent); font-weight: 600; }
+.header-engagement .eng-client { color: var(--muted); }
+.header-engagement .status-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  margin-left: 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.status-pill.active  { background: rgba(74, 222, 128, 0.15); color: var(--good); }
+.status-pill.draft   { background: rgba(77, 159, 255, 0.15); color: var(--accent); }
+.status-pill.sealed  { background: rgba(128, 128, 144, 0.2); color: var(--muted); }
+.status-pill.unknown { background: rgba(128, 128, 144, 0.2); color: var(--muted); }
+
+.header-actions { display: flex; align-items: center; gap: 0.6rem; }
+.generated-at { font-family: var(--mono); font-size: 12px; }
+.btn {
+  font-family: var(--mono);
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.btn:hover  { border-color: var(--accent); color: var(--accent); }
+.btn:active { transform: translateY(1px); }
+
+/* --- Warnings banner ---------------------------------------------- */
+.warnings {
+  margin: 0.85rem 1.25rem 0;
+  padding: 0.6rem 0.85rem;
+  background: rgba(250, 204, 21, 0.09);
+  border: 1px solid rgba(250, 204, 21, 0.4);
+  border-radius: 6px;
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+.warnings ul { margin: 0; padding-left: 1rem; }
+.warnings li { margin: 2px 0; }
+
+/* --- Main / cards -------------------------------------------------- */
+main {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.grid { display: grid; gap: 1rem; }
+.grid-4 { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.grid-3 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+.card h2 {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.card-body { font-family: var(--mono); font-size: 13px; }
+
+.badge {
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+/* State indicators inside cards */
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.75rem; font-family: var(--mono); }
+.kv dt { color: var(--muted); font-size: 12px; }
+.kv dd { margin: 0; color: var(--text); font-size: 13px; }
+.pill {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pill.good { background: rgba(74, 222, 128, 0.15); color: var(--good); }
+.pill.warn { background: rgba(250, 204, 21, 0.15); color: var(--warn); }
+.pill.bad  { background: rgba(248, 113, 113, 0.15); color: var(--bad); }
+.pill.info { background: rgba(77, 159, 255, 0.15); color: var(--accent); }
+.pill.muted { background: rgba(128, 128, 144, 0.15); color: var(--muted); }
+
+.muted { color: var(--muted); }
+code { font-family: var(--mono); font-size: 12.5px; color: var(--text); }
+
+/* Recent lists (findings/notes) */
+.recent-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.recent-list li {
+  padding: 4px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-list .rid { color: var(--accent); font-weight: 600; }
+.recent-list .rsev { font-size: 10px; padding: 1px 6px; border-radius: 8px; text-transform: uppercase; letter-spacing: 0.04em; }
+.rsev.critical { background: rgba(248, 113, 113, 0.2); color: var(--bad); }
+.rsev.high     { background: rgba(248, 113, 113, 0.12); color: var(--bad); }
+.rsev.medium   { background: rgba(250, 204, 21, 0.15); color: var(--warn); }
+.rsev.low      { background: rgba(77, 159, 255, 0.15); color: var(--accent); }
+.rsev.info     { background: rgba(128, 128, 144, 0.15); color: var(--muted); }
+
+/* --- Footer -------------------------------------------------------- */
+.app-footer {
+  padding: 0.9rem 1.25rem;
+  text-align: center;
+  font-size: 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+  margin-top: 1rem;
+}
+
+/* --- Error state (daemon down) ------------------------------------ */
+.card.offline { border-color: rgba(248, 113, 113, 0.45); }
+.card.offline h2 { color: var(--bad); }
+
+/* --- Responsive --------------------------------------------------- */
+@media (max-width: 700px) {
+  .app-header { grid-template-columns: auto 1fr; row-gap: 0.5rem; }
+  .header-engagement { grid-column: 1 / -1; }
+}

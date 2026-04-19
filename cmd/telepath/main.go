@@ -60,6 +60,7 @@ func main() {
 		addToGroup(newDoctorCmd(), "setup"),
 		addToGroup(newVerifyConfigCmd(), "setup"),
 		addToGroup(newDaemonCmd(), "ops"),
+		addToGroup(newDashboardCmd(), "ops"),
 		addToGroup(newEngagementCmd(), "ops"),
 		addToGroup(newTransportCmd(), "ops"),
 		addToGroup(newClaudeCmd(), "integration"),

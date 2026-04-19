@@ -133,6 +133,71 @@ func TestServer_StartShutdown(t *testing.T) {
 	}
 }
 
+func TestHandler_StaticAssets_Root_ReturnsHTML(t *testing.T) {
+	t.Parallel()
+	h := &Handler{Fetcher: &fakeFetcher{}}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Errorf("status = %d", rr.Code)
+	}
+	if !strings.HasPrefix(rr.Header().Get("Content-Type"), "text/html") {
+		t.Errorf("content-type = %q", rr.Header().Get("Content-Type"))
+	}
+	body := rr.Body.String()
+	// Sanity: the index.html must reference the CSS + JS assets so
+	// the browser loads them. A regression that strips those links
+	// would break the dashboard silently.
+	if !strings.Contains(body, "/app.css") || !strings.Contains(body, "/app.js") {
+		t.Errorf("index.html missing asset references: %s", body)
+	}
+	if !strings.Contains(body, "engagement-bar") {
+		t.Errorf("index.html missing engagement-bar element (UI would be blank)")
+	}
+}
+
+func TestHandler_StaticAssets_CSS(t *testing.T) {
+	t.Parallel()
+	h := &Handler{Fetcher: &fakeFetcher{}}
+	req := httptest.NewRequest(http.MethodGet, "/app.css", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Errorf("status = %d", rr.Code)
+	}
+	if !strings.HasPrefix(rr.Header().Get("Content-Type"), "text/css") {
+		t.Errorf("content-type = %q", rr.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rr.Body.String(), ".card") {
+		t.Errorf("app.css missing .card rule")
+	}
+}
+
+func TestHandler_StaticAssets_JS(t *testing.T) {
+	t.Parallel()
+	h := &Handler{Fetcher: &fakeFetcher{}}
+	req := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Errorf("status = %d", rr.Code)
+	}
+	if !strings.HasPrefix(rr.Header().Get("Content-Type"), "application/javascript") {
+		t.Errorf("content-type = %q", rr.Header().Get("Content-Type"))
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "/api/state") {
+		t.Errorf("app.js missing polling endpoint reference")
+	}
+	// Regression guard: the app uses DOM-building helpers rather
+	// than innerHTML for user-controlled values. If someone
+	// "simplifies" back to innerHTML, catch it here.
+	if strings.Contains(body, ".innerHTML") {
+		t.Errorf("app.js uses innerHTML — XSS risk; use el() + setContent() instead")
+	}
+}
+
 // testCtx returns a short-lived context for Shutdown. Avoids pulling
 // context/time into the top of every test.
 func testCtx(t *testing.T) context.Context {

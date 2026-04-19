@@ -333,6 +333,36 @@ echo ">> 21. Close engagement"
 check "close succeeded" grep -q "sealed acme-01" "$ROOT/close.out"
 check "status=sealed" grep -q 'status: sealed' "$ROOT/engagements/acme-01/engagement.yaml"
 
+echo ">> 21b. Dashboard serves index + state"
+# Start the dashboard in --no-browser mode on a fixed localhost port
+# (piping through xxd-style ephemeral port selection is brittle in CI).
+DASH_PORT=${DASH_PORT:-0}
+"$BIN" dashboard --bind "127.0.0.1:${DASH_PORT}" --no-browser >"$ROOT/dash.out" 2>&1 &
+DASH_PID=$!
+# Wait for listen message with the chosen port.
+DASH_URL=""
+for i in $(seq 1 30); do
+  if line=$(grep -o 'http://127\.0\.0\.1:[0-9]*' "$ROOT/dash.out" 2>/dev/null | head -1); then
+    if [[ -n "$line" ]]; then DASH_URL="$line"; break; fi
+  fi
+  sleep 0.1
+done
+if [[ -z "$DASH_URL" ]]; then
+  echo "  [FAIL] dashboard did not print URL within 3s"
+  failures=$((failures+1))
+else
+  echo "  dashboard URL: $DASH_URL"
+  check "dashboard / returns 200" bash -c "curl -s -o /dev/null -w '%{http_code}' '$DASH_URL/' | grep -q '^200$'"
+  check "dashboard / returns html" bash -c "curl -s '$DASH_URL/' | grep -q '<title>telepath</title>'"
+  check "dashboard /app.css loads" bash -c "curl -s '$DASH_URL/app.css' | grep -q '\\.card'"
+  check "dashboard /app.js loads" bash -c "curl -s '$DASH_URL/app.js' | grep -q '/api/state'"
+  check "dashboard /api/state returns json" bash -c "curl -s '$DASH_URL/api/state' | grep -q '\"daemon\"'"
+  check "dashboard /api/state reports running daemon" bash -c "curl -s '$DASH_URL/api/state' | grep -q '\"pid\"\\|\"version\"'"
+  check "dashboard /healthz returns ok" bash -c "curl -s '$DASH_URL/healthz' | grep -q '^ok$'"
+fi
+kill -TERM "$DASH_PID" 2>/dev/null || true
+wait "$DASH_PID" 2>/dev/null || true
+
 echo ">> 22. Transport down"
 "$BIN" transport down >"$ROOT/td.out" 2>&1
 check "transport down" grep -q "down" "$ROOT/td.out"

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>telepath</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-dot"></span>
+      <span class="brand-name">telepath</span>
+    </div>
+    <div class="header-engagement" id="engagement-bar">
+      <span class="muted">loading…</span>
+    </div>
+    <div class="header-actions">
+      <span class="generated-at muted" id="generated-at" title="server-reported snapshot time"></span>
+      <button id="refresh" class="btn" type="button" title="refresh now">refresh</button>
+    </div>
+  </header>
+
+  <div id="warnings" class="warnings" hidden></div>
+
+  <main>
+    <section class="grid grid-4">
+      <article class="card" id="card-daemon">
+        <h2>daemon</h2>
+        <div class="card-body muted">…</div>
+      </article>
+      <article class="card" id="card-engagement">
+        <h2>engagement</h2>
+        <div class="card-body muted">…</div>
+      </article>
+      <article class="card" id="card-transport">
+        <h2>transport</h2>
+        <div class="card-body muted">…</div>
+      </article>
+      <article class="card" id="card-oauth">
+        <h2>oauth</h2>
+        <div class="card-body muted">…</div>
+      </article>
+    </section>
+
+    <section class="grid grid-3">
+      <article class="card" id="card-findings">
+        <h2>findings <span class="badge" id="count-findings">0</span></h2>
+        <div class="card-body muted">…</div>
+      </article>
+      <article class="card" id="card-notes">
+        <h2>notes <span class="badge" id="count-notes">0</span></h2>
+        <div class="card-body muted">…</div>
+      </article>
+      <article class="card" id="card-evidence">
+        <h2>evidence <span class="badge" id="count-evidence">0</span></h2>
+        <div class="card-body muted">…</div>
+      </article>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span class="muted">localhost only · read-only view · polls every 2s</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

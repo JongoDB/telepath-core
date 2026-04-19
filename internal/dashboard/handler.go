@@ -20,6 +20,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.healthz(w, r)
 	case "/api/state":
 		h.apiState(w, r)
+	case "/", "/index.html", "/app.css", "/app.js":
+		h.staticHandler(w, r)
 	default:
 		http.NotFound(w, r)
 	}
