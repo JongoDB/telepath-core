@@ -43,15 +43,34 @@ func TestMCPAdapter_ToolsList_ContainsKeyTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := out.String()
+	// Tools the plugin's hook lib + subagents call during every
+	// engagement. Don't remove one without also updating the plugin —
+	// the MCP surface is the stable-contract boundary.
 	for _, required := range []string{
 		"telepath_engagement_get",
+		"telepath_scope_check",
 		"telepath_ssh_exec",
+		"telepath_winrm_powershell",
+		"telepath_winrm_cmd",
 		"telepath_http_request",
+		"telepath_saas_request",
+		"telepath_saas_refresh",
+		"telepath_files_collect",
+		"telepath_files_list_remote",
+		"telepath_files_store_synthesized",
+		"telepath_files_get_evidence",
+		"telepath_evidence_search",
 		"telepath_findings_create",
+		"telepath_findings_update",
+		"telepath_findings_get",
+		"telepath_findings_list",
+		"telepath_findings_set_status",
 		"telepath_notes_create",
+		"telepath_notes_list",
+		"telepath_notes_get",
 	} {
 		if !strings.Contains(body, required) {
-			t.Errorf("tools/list missing %q: %s", required, body)
+			t.Errorf("tools/list missing %q", required)
 		}
 	}
 }
