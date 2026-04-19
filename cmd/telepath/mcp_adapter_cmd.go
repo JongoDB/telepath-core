@@ -166,6 +166,29 @@ var toolCatalog = []toolSpec{
 		}, []string{"host", "username", "command"}),
 	},
 	{
+		MCPName:      "telepath_saas_request",
+		DaemonMethod: schema.MethodSaaSRequest,
+		Description:  "Authenticated HTTPS call against a connected SaaS provider (m365|google|salesforce). Daemon auto-refreshes the access token if near expiry and injects the Authorization: Bearer header — callers never see raw tokens.",
+		InputSchema: jsonSchemaObject(map[string]any{
+			"provider":        jsonSchemaString("m365 | google | salesforce"),
+			"tenant":          jsonSchemaString("tenant label used at oauth begin; default 'default'"),
+			"method":          jsonSchemaString("GET|POST|PUT|PATCH|DELETE"),
+			"url":             jsonSchemaString("absolute URL (e.g., https://graph.microsoft.com/v1.0/me)"),
+			"headers":         jsonSchemaObject(map[string]any{}, nil),
+			"body":            jsonSchemaString("body bytes (base64 for binary)"),
+			"timeout_seconds": jsonSchemaInt("request timeout"),
+		}, []string{"provider", "url"}),
+	},
+	{
+		MCPName:      "telepath_saas_refresh",
+		DaemonMethod: schema.MethodSaaSRefresh,
+		Description:  "Force-refresh the access token for a connected SaaS provider. Useful before a long-running session or as a recovery step when a call returns 401.",
+		InputSchema: jsonSchemaObject(map[string]any{
+			"provider": jsonSchemaString("m365 | google | salesforce"),
+			"tenant":   jsonSchemaString("tenant label; default 'default'"),
+		}, []string{"provider"}),
+	},
+	{
 		MCPName:      "telepath_http_request",
 		DaemonMethod: schema.MethodHTTPRequest,
 		Description:  "Make an authenticated or anonymous HTTP request and return status, headers, and body.",

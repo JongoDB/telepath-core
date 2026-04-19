@@ -13,6 +13,7 @@ import (
 	"github.com/fsc/telepath-core/internal/config"
 	"github.com/fsc/telepath-core/internal/keys"
 	"github.com/fsc/telepath-core/internal/oauth/saas"
+	"github.com/fsc/telepath-core/internal/proxy/httpproxy"
 	"github.com/fsc/telepath-core/pkg/schema"
 )
 
@@ -284,6 +285,201 @@ func (d *Daemon) cleanExpiredOAuthSessionsLocked() {
 			delete(d.oauthSessions, id)
 		}
 	}
+}
+
+// saasPreExpiryWindow mirrors the claude subscription window — 5 minutes
+// is short enough that a slow daemon never hands out an already-expired
+// token, long enough that the refresh HTTP call amortizes across many
+// SaaS calls.
+const saasPreExpiryWindow = 5 * time.Minute
+
+// ensureFreshSaaSToken returns a non-expired access token for the
+// provider+tenant pair, refreshing transparently when the stored token
+// is within the pre-expiry window. Returns refreshed=true when a
+// refresh happened so callers can surface that fact in audit events.
+// Mirrors the claude subscription logic in cmd/telepath/claude_cmd.go;
+// keeping them separate is deliberate (different keystore layout).
+func (d *Daemon) ensureFreshSaaSToken(ctx context.Context, providerName, tenant string) (accessToken string, refreshed bool, err error) {
+	provider, ok := providerForName(providerName)
+	if !ok {
+		return "", false, fmt.Errorf("saas: unknown provider %q", providerName)
+	}
+	prefix := config.OAuthKeystorePrefix(providerName, tenant)
+
+	access, err := d.keys.Get(prefix + config.OAuthKeystoreSuffixAccessToken)
+	if err != nil {
+		return "", false, fmt.Errorf("saas: no access token for %s/%s; run `telepath oauth begin %s --tenant %s`",
+			providerName, tenant, providerName, tenant)
+	}
+	expRaw, err := d.keys.Get(prefix + config.OAuthKeystoreSuffixExpiresAt)
+	if err != nil {
+		// Missing expires_at → treat as expired, refresh to be safe.
+		expRaw = []byte(time.Now().UTC().Format(time.RFC3339))
+	}
+	expiresAt, perr := time.Parse(time.RFC3339, strings.TrimSpace(string(expRaw)))
+	if perr != nil {
+		return "", false, fmt.Errorf("saas: parse expires_at for %s/%s: %w", providerName, tenant, perr)
+	}
+	if time.Now().Add(saasPreExpiryWindow).Before(expiresAt) {
+		return string(access), false, nil
+	}
+
+	// Pre-expiry or expired — refresh.
+	refresh, err := d.keys.Get(prefix + config.OAuthKeystoreSuffixRefreshToken)
+	if err != nil {
+		return "", false, fmt.Errorf("saas: refresh token missing for %s/%s; re-run `telepath oauth begin %s --tenant %s`",
+			providerName, tenant, providerName, tenant)
+	}
+	cfg, _ := config.Load(d.configPath())
+	clientID := resolveClientID(cfg, providerName, "")
+	if clientID == "" {
+		return "", false, fmt.Errorf("saas: client_id not configured for %s; set oauth.%s.client_id in config.yaml",
+			providerName, providerName)
+	}
+	if uri := resolveRedirectURI(cfg, providerName); uri != "" {
+		provider.RedirectURI = uri
+	}
+	rctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	fresh, err := saas.Refresh(rctx, provider, clientID, string(refresh), "")
+	if err != nil {
+		return "", false, fmt.Errorf("saas: refresh %s/%s: %w", providerName, tenant, err)
+	}
+	if err := writeOAuthTokens(d.keys, prefix, fresh); err != nil {
+		// Non-fatal: we have a valid access token in hand. Next call's
+		// expiry read will re-trigger refresh which is costly but safe.
+		d.logger.Warn("saas: persist refreshed tokens", "provider", providerName, "tenant", tenant, "err", err)
+	}
+	return fresh.AccessToken, true, nil
+}
+
+// configPath returns the daemon's config path — flag override when set
+// on daemon.Config, else the canonical ~/.telepath/config.yaml.
+func (d *Daemon) configPath() string {
+	if d.cfg.ConfigPath != "" {
+		return d.cfg.ConfigPath
+	}
+	return config.DefaultPath()
+}
+
+// handleSaaSRequest executes an authenticated HTTPS call against a
+// SaaS provider. Token refresh is transparent. Scope is checked with
+// protocol "https" against the URL host — operators list
+// graph.microsoft.com / www.googleapis.com / etc. in their ROE
+// allowed_hosts (same as http.request).
+func (d *Daemon) handleSaaSRequest(req *schema.JSONRPCRequest) (json.RawMessage, *schema.JSONRPCError) {
+	var p schema.SaaSRequestParams
+	if err := unmarshalParams(req.Params, &p); err != nil {
+		return nil, err
+	}
+	if p.Provider == "" || p.URL == "" {
+		return nil, rpcErr(schema.ErrCodeInvalidParams, "provider and url are required")
+	}
+	tenant := p.Tenant
+	if tenant == "" {
+		tenant = config.OAuthDefaultTenant
+	}
+
+	active, rpcE := d.requireActive()
+	if rpcE != nil {
+		return nil, rpcE
+	}
+	if rpcE := d.checkScope(active, p.URL, "https"); rpcE != nil {
+		return nil, rpcE
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeoutFromSec(p.TimeoutSec, 30*time.Second))
+	defer cancel()
+
+	token, refreshed, err := d.ensureFreshSaaSToken(ctx, p.Provider, tenant)
+	if err != nil {
+		return nil, rpcErr(schema.ErrCodeInternalError, err.Error())
+	}
+
+	headers := map[string]string{}
+	for k, v := range p.Headers {
+		headers[k] = v
+	}
+	headers["Authorization"] = "Bearer " + token
+
+	h := httpproxy.New(d.Transport())
+	r, err := h.Do(ctx, httpproxy.Request{
+		Method:  p.Method,
+		URL:     p.URL,
+		Headers: headers,
+		Body:    p.Body,
+		Timeout: timeoutFromSec(p.TimeoutSec, 30*time.Second),
+	})
+	if err != nil {
+		return nil, rpcErr(schema.ErrCodeInternalError, err.Error())
+	}
+	out := schema.SaaSRequestResult{
+		OK:             true,
+		Status:         r.Status,
+		Headers:        r.Headers,
+		Body:           r.Body,
+		Truncated:      r.Truncated,
+		DurationMs:     r.DurationMs,
+		TokenRefreshed: refreshed,
+	}
+	d.auditMCPCall(active, "saas.request", map[string]any{
+		"provider":        p.Provider,
+		"tenant":          tenant,
+		"method":          p.Method,
+		"url":             p.URL,
+		"status":          r.Status,
+		"token_refreshed": refreshed,
+	})
+	return encodeResult(out)
+}
+
+// handleSaaSRefresh forces a refresh now. Useful for operators who want
+// to guarantee a long session starts with a fresh token, or for the
+// post-hoc "my last call failed, let me retry after explicit refresh"
+// recovery path.
+func (d *Daemon) handleSaaSRefresh(req *schema.JSONRPCRequest) (json.RawMessage, *schema.JSONRPCError) {
+	var p schema.SaaSRefreshParams
+	if err := unmarshalParams(req.Params, &p); err != nil {
+		return nil, err
+	}
+	if p.Provider == "" {
+		return nil, rpcErr(schema.ErrCodeInvalidParams, "provider is required")
+	}
+	tenant := p.Tenant
+	if tenant == "" {
+		tenant = config.OAuthDefaultTenant
+	}
+	provider, ok := providerForName(p.Provider)
+	if !ok {
+		return nil, rpcErr(schema.ErrCodeInvalidParams, "unknown provider: "+p.Provider)
+	}
+	prefix := config.OAuthKeystorePrefix(p.Provider, tenant)
+	refresh, err := d.keys.Get(prefix + config.OAuthKeystoreSuffixRefreshToken)
+	if err != nil {
+		return nil, rpcErr(schema.ErrCodeInvalidParams, "no refresh token for "+p.Provider+"/"+tenant)
+	}
+	cfg, _ := config.Load(d.configPath())
+	clientID := resolveClientID(cfg, p.Provider, "")
+	if clientID == "" {
+		return nil, rpcErr(schema.ErrCodeInvalidParams, "client_id not configured for "+p.Provider)
+	}
+	if uri := resolveRedirectURI(cfg, p.Provider); uri != "" {
+		provider.RedirectURI = uri
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	fresh, err := saas.Refresh(ctx, provider, clientID, string(refresh), "")
+	if err != nil {
+		return nil, rpcErr(schema.ErrCodeInternalError, err.Error())
+	}
+	if err := writeOAuthTokens(d.keys, prefix, fresh); err != nil {
+		return nil, rpcErr(schema.ErrCodeInternalError, "persist refreshed tokens: "+err.Error())
+	}
+	return encodeResult(schema.SaaSRefreshResult{
+		OK:          true,
+		ExpiresAt:   fresh.ExpiresAt.UTC().Format(time.RFC3339),
+		RefreshedAt: time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 // Satisfy go vet when no OAuth handler actually references saas directly

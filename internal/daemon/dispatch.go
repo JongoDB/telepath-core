@@ -97,6 +97,10 @@ func (d *Daemon) dispatch(ctx context.Context, req *schema.JSONRPCRequest) (json
 		return d.handleOAuthComplete(req)
 	case schema.MethodOAuthStatus:
 		return d.handleOAuthStatus(req)
+	case schema.MethodSaaSRequest:
+		return d.handleSaaSRequest(req)
+	case schema.MethodSaaSRefresh:
+		return d.handleSaaSRefresh(req)
 	case schema.MethodFindingsCreate:
 		return d.handleFindingsCreate(req)
 	case schema.MethodFindingsUpdate:

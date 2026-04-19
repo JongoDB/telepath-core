@@ -331,6 +331,8 @@ const (
 	MethodOAuthBegin      = "oauth.begin"
 	MethodOAuthComplete   = "oauth.complete"
 	MethodOAuthStatus     = "oauth.status"
+	MethodSaaSRequest     = "saas.request"
+	MethodSaaSRefresh     = "saas.refresh"
 )
 
 // SSHExecParams is the input for MethodSSHExec.
@@ -764,4 +766,53 @@ type OAuthConnection struct {
 	Tenant    string `json:"tenant"`
 	ExpiresAt string `json:"expires_at"`
 	Expired   bool   `json:"expired"`
+}
+
+// SaaSRequestParams is the input for MethodSaaSRequest — a generic
+// authenticated HTTPS call against a SaaS provider. The daemon loads
+// the stored access token for provider+tenant, refreshes transparently
+// if it's within the 5-minute pre-expiry window, injects
+// "Authorization: Bearer <token>", and forwards to httpproxy (same
+// transport routing + body truncation as plain http.request). Scope is
+// checked against the URL host with protocol "https".
+type SaaSRequestParams struct {
+	Provider   string            `json:"provider"`
+	Tenant     string            `json:"tenant,omitempty"`
+	Method     string            `json:"method"`
+	URL        string            `json:"url"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Body       []byte            `json:"body,omitempty"`
+	TimeoutSec int               `json:"timeout_seconds,omitempty"`
+}
+
+// SaaSRequestResult mirrors HTTPRequestResult; a new struct lets us
+// extend it without breaking the plain-HTTP shape.
+type SaaSRequestResult struct {
+	OK         bool                `json:"ok"`
+	Status     int                 `json:"status"`
+	Headers    map[string][]string `json:"headers,omitempty"`
+	Body       []byte              `json:"body,omitempty"`
+	Truncated  bool                `json:"truncated,omitempty"`
+	DurationMs int64               `json:"duration_ms"`
+	EvidenceID string              `json:"evidence_id,omitempty"`
+	// TokenRefreshed flags "we had to refresh before firing this call" so
+	// audit + operator UX can surface the extra latency.
+	TokenRefreshed bool `json:"token_refreshed,omitempty"`
+}
+
+// SaaSRefreshParams is the input for MethodSaaSRefresh — explicit
+// refresh for operators who want to guarantee a long-running session
+// starts with a fresh token.
+type SaaSRefreshParams struct {
+	Provider string `json:"provider"`
+	Tenant   string `json:"tenant,omitempty"`
+}
+
+// SaaSRefreshResult is the output; ExpiresAt is the new expiry from
+// the provider's response. RefreshedAt is the daemon's local clock when
+// the refresh happened.
+type SaaSRefreshResult struct {
+	OK          bool   `json:"ok"`
+	ExpiresAt   string `json:"expires_at"`
+	RefreshedAt string `json:"refreshed_at"`
 }

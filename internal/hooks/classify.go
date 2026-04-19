@@ -66,8 +66,15 @@ func classifyMCP(tool string, toolInput json.RawMessage) schema.ClassifyResult {
 	switch {
 	case strings.HasSuffix(low, "ssh.exec"), strings.Contains(low, "ssh_exec"), strings.HasSuffix(low, "winrm.powershell"), strings.Contains(low, "winrm_powershell"):
 		return classifyShell(toolInput)
-	case strings.HasSuffix(low, "http.request"), strings.Contains(low, "http_request"):
+	case strings.HasSuffix(low, "http.request"), strings.Contains(low, "http_request"),
+		strings.HasSuffix(low, "saas.request"), strings.Contains(low, "saas_request"):
+		// SaaS request follows the same read-vs-write heuristic as plain
+		// HTTP — GET/HEAD/OPTIONS are reads, POST/PUT/PATCH/DELETE need
+		// approval. The daemon's write-actions policy still overrides
+		// per ROE.
 		return classifyHTTP(toolInput)
+	case strings.HasSuffix(low, "saas.refresh"), strings.Contains(low, "saas_refresh"):
+		return schema.ClassifyResult{OK: true, Class: schema.ClassReadEnumeration, Reason: "operator-side token refresh"}
 	case strings.Contains(low, "files_collect"), strings.Contains(low, "sftp_get"), strings.HasSuffix(low, "files.collect"):
 		return schema.ClassifyResult{OK: true, Class: schema.ClassReadBulk, Reason: "file collection"}
 	case strings.Contains(low, "sftp_list"), strings.Contains(low, "evidence.search"), strings.Contains(low, "evidence_search"), strings.Contains(low, "files_list_remote"), strings.HasSuffix(low, "files.list_remote"):
