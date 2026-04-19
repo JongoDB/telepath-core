@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -482,6 +481,3 @@ func (d *Daemon) handleSaaSRefresh(req *schema.JSONRPCRequest) (json.RawMessage,
 	})
 }
 
-// Satisfy go vet when no OAuth handler actually references saas directly
-// beyond the ones in this file (keeps the import alive during refactors).
-var _ = errors.New
