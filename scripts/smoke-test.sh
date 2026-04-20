@@ -333,6 +333,40 @@ echo ">> 21. Close engagement"
 check "close succeeded" grep -q "sealed acme-01" "$ROOT/close.out"
 check "status=sealed" grep -q 'status: sealed' "$ROOT/engagements/acme-01/engagement.yaml"
 
+echo ">> 21a. daemon run --with-dashboard lights both up in one process"
+# Quick check that the combined flag boots without fighting the already-
+# running daemon. We spin a second tmpdir daemon with its own socket,
+# then check the dashboard URL it prints is reachable.
+COMBO_ROOT=$(mktemp -d)
+COMBO_SOCK="$COMBO_ROOT/combo.sock"
+"$BIN" daemon run \
+  --socket "$COMBO_SOCK" \
+  --root "$COMBO_ROOT" \
+  --pid-file "$COMBO_ROOT/pid" \
+  --with-dashboard \
+  --dashboard-bind "127.0.0.1:0" \
+  >"$ROOT/combo.out" 2>&1 &
+COMBO_PID=$!
+COMBO_URL=""
+for i in $(seq 1 30); do
+  if line=$(grep -oE 'dashboard listening on http://127\.0\.0\.1:[0-9]+/\?t=[A-Za-z0-9_-]+' "$ROOT/combo.out" 2>/dev/null | head -1); then
+    if [[ -n "$line" ]]; then COMBO_URL=$(echo "$line" | sed 's|^.*listening on ||'); break; fi
+  fi
+  sleep 0.1
+done
+if [[ -z "$COMBO_URL" ]]; then
+  echo "  [FAIL] combined daemon --with-dashboard did not print dashboard URL"
+  echo "  output:"; sed 's/^/    /' "$ROOT/combo.out"
+  failures=$((failures+1))
+else
+  COMBO_TOKEN=$(echo "$COMBO_URL" | sed -E 's|.*\?t=||')
+  COMBO_BASE=$(echo "$COMBO_URL" | sed -E 's|/\?t=.*||')
+  check "combined: daemon socket exists" test -S "$COMBO_SOCK"
+  check "combined: dashboard /api/state via Bearer reaches its own daemon" bash -c "curl -s -H 'Authorization: Bearer $COMBO_TOKEN' '$COMBO_BASE/api/state' | grep -q '\"daemon\"'"
+fi
+kill -TERM "$COMBO_PID" 2>/dev/null || true
+wait "$COMBO_PID" 2>/dev/null || true
+
 echo ">> 21b. Dashboard serves index + state (with auth)"
 # Bind loopback-only for the smoke test; production default is 0.0.0.0.
 "$BIN" dashboard --bind "127.0.0.1:0" --no-browser >"$ROOT/dash.out" 2>&1 &
