@@ -359,10 +359,10 @@ func printConfigNextSteps(out io.Writer, backend string) {
 		fmt.Fprintln(out)
 	}
 	fmt.Fprintln(out, "Next:")
+	fmt.Fprintln(out, "  telepath start                  # daemon + dashboard + browser (recommended)")
 	fmt.Fprintln(out, "  telepath doctor                 # verify credential + daemon + keystore")
 	fmt.Fprintln(out, "  telepath claude                 # launch Claude Code with the credential injected")
 	fmt.Fprintln(out, "  telepath engagement new <id>    # scaffold your first engagement")
-	fmt.Fprintln(out, "  telepath daemon run             # start the daemon (foreground)")
 }
 
 // runClaudeSubscriptionOAuth executes the headless PKCE flow documented in

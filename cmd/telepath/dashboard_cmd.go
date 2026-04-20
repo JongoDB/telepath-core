@@ -29,13 +29,19 @@ func newDashboardCmd() *cobra.Command {
 		Long: `Start a web dashboard that polls the running daemon and renders
 engagement + transport + OAuth + findings + notes + evidence state.
 
+Most operators want 'telepath start' instead — one command boots
+the daemon + this dashboard + a browser. Use 'telepath dashboard'
+when you need to connect to an already-running daemon (e.g. from a
+different terminal, or against a daemon started via a systemd/
+launchd service unit).
+
 Binds to 0.0.0.0:0 by default so the headless use case works out of
-the box — run 'telepath daemon run' on a remote host, hit the
-dashboard URL from a laptop browser. The listen URL includes a
-one-time bearer token (?t=...) that the dashboard stores in an
-HttpOnly session cookie on first load; requests without the token
-get 401 regardless of origin interface. Token lives in memory only
-and rotates on every restart.
+the box — run the daemon on a remote host, hit the dashboard URL
+from a laptop browser. The listen URL includes a one-time bearer
+token (?t=...) that the dashboard stores in an HttpOnly session
+cookie on first load; requests without the token get 401 regardless
+of origin interface. Token lives in memory only and rotates on
+every restart.
 
 Pass --bind 127.0.0.1:0 to scope to loopback for a local-only
 desktop flow.

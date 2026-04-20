@@ -57,16 +57,22 @@ func newDaemonRunCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "run",
 		Short: "Run the daemon (foreground by default; use --detach to fork)",
-		Long: `Run the daemon. By default runs in the foreground until Ctrl+C. Pass
---detach to fork to the background with logs going to
-~/.telepath/logs/daemon.log (Unix only; Windows should schedule as a
-service).
+		Long: `Run the daemon directly. Most operators want 'telepath start'
+instead — it's this command plus the dashboard plus a browser.
+Reach for 'daemon run' when you need granular control (daemon-only,
+non-default socket, scripted/CI boot, or wiring into a systemd/
+launchd service unit).
+
+By default runs in the foreground until Ctrl+C. Pass --detach to
+fork to the background with logs going to ~/.telepath/logs/daemon.log
+(Unix only; Windows should schedule as a service).
 
 Pass --with-dashboard to spawn the operator dashboard alongside the
-daemon in the same process — one gesture, one terminal, both up. The
-dashboard listens on --dashboard-bind (default 0.0.0.0:0, ephemeral
-port) and prints a tokenized URL on stderr. Closing the daemon
-(SIGINT/SIGTERM) shuts the dashboard down too.`,
+daemon in the same process (headless — no browser auto-open; use
+'telepath start' for the browser-opening flavor). The dashboard
+listens on --dashboard-bind (default 0.0.0.0:0, ephemeral port) and
+prints a tokenized URL on stderr. Closing the daemon (SIGINT/SIGTERM)
+shuts the dashboard down too.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if detach {
 				return detachAndExit(cmd, f)
@@ -234,7 +240,7 @@ func newDaemonStatusCmd() *cobra.Command {
 				return nil
 			}
 			if !daemon.PIDAlive(pid) {
-				fmt.Printf("daemon: stale pidfile %s (pid %d not alive); run `telepath daemon run` to start a fresh daemon\n", pidPath, pid)
+				fmt.Printf("daemon: stale pidfile %s (pid %d not alive); run `telepath start` (or `telepath daemon run`) to start a fresh daemon\n", pidPath, pid)
 				return nil
 			}
 			var p schema.PingResult

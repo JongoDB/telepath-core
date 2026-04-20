@@ -30,7 +30,7 @@ func rpc(method string, params any, dst any) error {
 		if errors.As(err, &re) {
 			return errors.New(re.Message)
 		}
-		return fmt.Errorf("telepath daemon unreachable at %s: %v\n(start it with `telepath daemon run` in another terminal)", sock, err)
+		return fmt.Errorf("telepath daemon unreachable at %s: %v\n(start it with `telepath start` — or `telepath daemon run` for granular control)", sock, err)
 	}
 	if dst == nil {
 		return nil

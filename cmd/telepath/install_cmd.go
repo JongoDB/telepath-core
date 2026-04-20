@@ -285,6 +285,8 @@ func printNextSteps(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Next:")
 	fmt.Fprintln(out, "  telepath config init          # interactive setup (TUI)")
-	fmt.Fprintln(out, "  telepath daemon run           # start the daemon (foreground)")
+	fmt.Fprintln(out, "  telepath start                # daemon + dashboard + browser (recommended)")
 	fmt.Fprintln(out, "  telepath engagement new …     # create your first engagement")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Power-user granular control still available: `telepath daemon run` + `telepath dashboard`.")
 }
