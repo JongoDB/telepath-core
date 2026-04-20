@@ -6,6 +6,21 @@
 const POLL_MS = 2000;
 const byId = (id) => document.getElementById(id);
 
+// On first load with `?t=<token>`, the server has already set the
+// session cookie from the query param. Drop the token from the visible
+// URL so accidental screenshots / URL-shares don't leak the credential.
+// The cookie keeps subsequent fetches authenticated.
+(function stripTokenFromURL() {
+  try {
+    const u = new URL(window.location.href);
+    if (u.searchParams.has("t")) {
+      u.searchParams.delete("t");
+      const clean = u.pathname + (u.search ? u.search : "") + u.hash;
+      window.history.replaceState({}, "", clean || "/");
+    }
+  } catch (_) { /* non-fatal; older browsers fall through without stripping */ }
+})();
+
 // el builds a DOM node. Props map: `class`, `text`, `html` (static
 // strings only — never user input), `title`, or any event handler
 // (onclick, onkeydown...). Children are strings or nodes.

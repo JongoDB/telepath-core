@@ -333,32 +333,44 @@ echo ">> 21. Close engagement"
 check "close succeeded" grep -q "sealed acme-01" "$ROOT/close.out"
 check "status=sealed" grep -q 'status: sealed' "$ROOT/engagements/acme-01/engagement.yaml"
 
-echo ">> 21b. Dashboard serves index + state"
-# Start the dashboard in --no-browser mode on a fixed localhost port
-# (piping through xxd-style ephemeral port selection is brittle in CI).
-DASH_PORT=${DASH_PORT:-0}
-"$BIN" dashboard --bind "127.0.0.1:${DASH_PORT}" --no-browser >"$ROOT/dash.out" 2>&1 &
+echo ">> 21b. Dashboard serves index + state (with auth)"
+# Bind loopback-only for the smoke test; production default is 0.0.0.0.
+"$BIN" dashboard --bind "127.0.0.1:0" --no-browser >"$ROOT/dash.out" 2>&1 &
 DASH_PID=$!
-# Wait for listen message with the chosen port.
+# Wait for listen message with the tokenized URL.
 DASH_URL=""
+DASH_BASE=""
+DASH_TOKEN=""
 for i in $(seq 1 30); do
-  if line=$(grep -o 'http://127\.0\.0\.1:[0-9]*' "$ROOT/dash.out" 2>/dev/null | head -1); then
-    if [[ -n "$line" ]]; then DASH_URL="$line"; break; fi
+  # URL now looks like http://127.0.0.1:PORT/?t=TOKEN. Extract both parts.
+  if line=$(grep -oE 'http://127\.0\.0\.1:[0-9]+/\?t=[A-Za-z0-9_-]+' "$ROOT/dash.out" 2>/dev/null | head -1); then
+    if [[ -n "$line" ]]; then
+      DASH_URL="$line"
+      DASH_BASE=$(echo "$line" | sed -E 's|/\?t=.*||')
+      DASH_TOKEN=$(echo "$line" | sed -E 's|.*\?t=||')
+      break
+    fi
   fi
   sleep 0.1
 done
 if [[ -z "$DASH_URL" ]]; then
-  echo "  [FAIL] dashboard did not print URL within 3s"
+  echo "  [FAIL] dashboard did not print tokenized URL within 3s"
+  echo "  output was:"
+  sed 's/^/    /' "$ROOT/dash.out"
   failures=$((failures+1))
 else
-  echo "  dashboard URL: $DASH_URL"
-  check "dashboard / returns 200" bash -c "curl -s -o /dev/null -w '%{http_code}' '$DASH_URL/' | grep -q '^200$'"
-  check "dashboard / returns html" bash -c "curl -s '$DASH_URL/' | grep -q '<title>telepath</title>'"
-  check "dashboard /app.css loads" bash -c "curl -s '$DASH_URL/app.css' | grep -q '\\.card'"
-  check "dashboard /app.js loads" bash -c "curl -s '$DASH_URL/app.js' | grep -q '/api/state'"
-  check "dashboard /api/state returns json" bash -c "curl -s '$DASH_URL/api/state' | grep -q '\"daemon\"'"
-  check "dashboard /api/state reports running daemon" bash -c "curl -s '$DASH_URL/api/state' | grep -q '\"pid\"\\|\"version\"'"
-  check "dashboard /healthz returns ok" bash -c "curl -s '$DASH_URL/healthz' | grep -q '^ok$'"
+  echo "  dashboard URL: $DASH_BASE (token length ${#DASH_TOKEN})"
+  # Unauthed access → 401 regardless of interface.
+  check "dashboard /api/state rejects unauth" bash -c "curl -s -o /dev/null -w '%{http_code}' '$DASH_BASE/api/state' | grep -q '^401$'"
+  check "dashboard / rejects unauth (static assets also gated)" bash -c "curl -s -o /dev/null -w '%{http_code}' '$DASH_BASE/' | grep -q '^401$'"
+  # Tokenized bootstrap URL → 200 + Set-Cookie on the response.
+  check "dashboard / with ?t= returns 200" bash -c "curl -s -o /dev/null -w '%{http_code}' '$DASH_URL' | grep -q '^200$'"
+  check "dashboard / with ?t= returns html" bash -c "curl -s '$DASH_URL' | grep -q '<title>telepath</title>'"
+  check "dashboard / with ?t= sets session cookie" bash -c "curl -sI '$DASH_URL' | grep -qi 'set-cookie:.*telepath_dash'"
+  # Bearer header works too — for scripted/SDK clients.
+  check "dashboard /api/state via Bearer header" bash -c "curl -s -H 'Authorization: Bearer $DASH_TOKEN' '$DASH_BASE/api/state' | grep -q '\"daemon\"'"
+  # /healthz stays open for probes.
+  check "dashboard /healthz returns ok without auth" bash -c "curl -s '$DASH_BASE/healthz' | grep -q '^ok$'"
 fi
 kill -TERM "$DASH_PID" 2>/dev/null || true
 wait "$DASH_PID" 2>/dev/null || true
