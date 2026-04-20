@@ -454,6 +454,17 @@ echo ">> 22. Transport down"
 "$BIN" transport down >"$ROOT/td.out" 2>&1
 check "transport down" grep -q "down" "$ROOT/td.out"
 
+echo ">> 22b. service install --print-only renders a sane unit"
+"$BIN" service install --print-only >"$ROOT/svc.out" 2>&1
+check "service print: includes unit path" grep -q 'would be written to' "$ROOT/svc.out"
+check "service print: contains ExecStart line" grep -q 'ExecStart=' "$ROOT/svc.out"
+check "service print: refers to telepath start" grep -q '"start"' "$ROOT/svc.out"
+check "service print: --no-browser in args" grep -q '"--no-browser"' "$ROOT/svc.out"
+check "service print: --no-dashboard (default)" grep -q '"--no-dashboard"' "$ROOT/svc.out"
+"$BIN" service install --print-only --with-dashboard --dashboard-bind 127.0.0.1:9000 >"$ROOT/svc2.out" 2>&1
+check "service print --with-dashboard: drops --no-dashboard" bash -c "! grep -q -- '--no-dashboard' '$ROOT/svc2.out'"
+check "service print --with-dashboard: includes --dashboard-bind" bash -c "grep -q -- '--dashboard-bind' '$ROOT/svc2.out'"
+
 echo ">> 23. Doctor reports healthy"
 "$BIN" doctor >"$ROOT/dr.out" 2>&1
 check "doctor keystore OK" grep -q "keystore" "$ROOT/dr.out"

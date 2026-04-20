@@ -57,6 +57,7 @@ func main() {
 		addToGroup(newUninstallCmd(), "setup"),
 		addToGroup(newConfigCmd(), "setup"),
 		addToGroup(newOAuthCmd(), "setup"),
+		addToGroup(newServiceCmd(), "setup"),
 		addToGroup(newDoctorCmd(), "setup"),
 		addToGroup(newVerifyConfigCmd(), "setup"),
 		// start + stop are the recommended happy-path verbs; daemon +
