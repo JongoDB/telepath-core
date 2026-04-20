@@ -333,6 +333,47 @@ echo ">> 21. Close engagement"
 check "close succeeded" grep -q "sealed acme-01" "$ROOT/close.out"
 check "status=sealed" grep -q 'status: sealed' "$ROOT/engagements/acme-01/engagement.yaml"
 
+echo ">> 21z. telepath start / telepath stop (top-level happy path)"
+# New one-gesture entry point: should boot daemon + dashboard together
+# + respect --no-browser for headless smoke use. telepath stop sends
+# SIGTERM to the recorded pidfile.
+START_ROOT=$(mktemp -d)
+START_SOCK="$START_ROOT/s"
+START_PID="$START_ROOT/pid"
+"$BIN" start \
+  --socket "$START_SOCK" \
+  --root "$START_ROOT" \
+  --pid-file "$START_PID" \
+  --dashboard-bind "127.0.0.1:0" \
+  --no-browser \
+  >"$ROOT/start.out" 2>&1 &
+START_WATCH_PID=$!
+START_URL=""
+for i in $(seq 1 30); do
+  if line=$(grep -oE 'dashboard listening on http://127\.0\.0\.1:[0-9]+/\?t=[A-Za-z0-9_-]+' "$ROOT/start.out" 2>/dev/null | head -1); then
+    if [[ -n "$line" ]]; then START_URL=$(echo "$line" | sed 's|^.*listening on ||'); break; fi
+  fi
+  sleep 0.1
+done
+if [[ -z "$START_URL" ]]; then
+  echo "  [FAIL] telepath start did not print dashboard URL within 3s"
+  echo "  output:"; sed 's/^/    /' "$ROOT/start.out"
+  failures=$((failures+1))
+else
+  START_TOKEN=$(echo "$START_URL" | sed -E 's|.*\?t=||')
+  START_BASE=$(echo "$START_URL" | sed -E 's|/\?t=.*||')
+  check "start: daemon socket exists" test -S "$START_SOCK"
+  check "start: pidfile written" test -f "$START_PID"
+  check "start: dashboard reachable via Bearer" bash -c "curl -s -H 'Authorization: Bearer $START_TOKEN' '$START_BASE/api/state' | grep -q '\"daemon\"'"
+  # Stop via the new top-level verb; should drain both.
+  TELEPATH_PID_FILE="$START_PID" "$BIN" stop >"$ROOT/stop.out" 2>&1
+  check "stop: prints SIGTERM notice" grep -q 'sent SIGTERM' "$ROOT/stop.out"
+  # Give the daemon a moment to exit, then confirm the socket is gone.
+  for i in $(seq 1 30); do [[ ! -S "$START_SOCK" ]] && break; sleep 0.1; done
+  check "stop: socket removed after shutdown" bash -c "test ! -S '$START_SOCK'"
+fi
+wait "$START_WATCH_PID" 2>/dev/null || true
+
 echo ">> 21a. daemon run --with-dashboard lights both up in one process"
 # Quick check that the combined flag boots without fighting the already-
 # running daemon. We spin a second tmpdir daemon with its own socket,

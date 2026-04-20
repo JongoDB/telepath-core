@@ -171,8 +171,9 @@ documented in `../telepath-v2/docs/ARCHITECTURE.md`.
   hook lib (`hooks/telepath_hook_lib.py`). Rename → break the plugin. Add
   new methods instead.
 - **CLI surface is split into permanent vs. scaffolding.** The permanent
-  ones — `install`, `uninstall`, `update`, `config`, `doctor`, `daemon`,
-  `claude`, `verify-config`, `mcp-adapter` — are setup/config or terminal-
+  ones — `start`, `stop`, `install`, `uninstall`, `update`, `config`,
+  `doctor`, `daemon`, `dashboard`, `claude`, `verify-config`,
+  `mcp-adapter`, `oauth` — are setup/config, happy-path boot, or terminal-
   native and survive the v0.4 GUI. The scaffolding ones — `engagement`,
   `transport`, and any future `findings`/`notes`/`evidence` — are thin
   RPC wrappers kept alive only until the GUI renders the same state. Do
@@ -181,6 +182,20 @@ documented in `../telepath-v2/docs/ARCHITECTURE.md`.
   will replace them and we don't want two polished UIs to maintain.
   Plain tab-separated lines, one-line summaries, and direct
   `fmt.Fprintf`s are the right shape.
+- **`telepath start` + `telepath stop` are the recommended boot path.**
+  Both are thin wrappers: `start` = `daemon run --with-dashboard` +
+  auto-open-browser; `stop` = signal the recorded pidfile.
+  `daemon run` / `dashboard` / `daemon stop` stay registered for
+  granular control and automation. When adding boot-related flags,
+  plumb them through all three entry points in the same gesture so
+  power users never have to pick between "easy" and "flexible."
+- **Test-only package globals must not race under t.Parallel.** The
+  `TokenURL` vars in `internal/oauth/claude` + `internal/oauth/saas`
+  are overridden via `setTokenURL` / direct assignment in tests — any
+  test that mutates them must run serially (drop `t.Parallel`), since
+  other tests in the same package read them too. A prior bug had three
+  parallel tests fighting over `claude.TokenURL` and flaking ~80% of
+  runs. If you add a new mutating test, leave it serial.
 
 ## Memory pointers (for Claude)
 

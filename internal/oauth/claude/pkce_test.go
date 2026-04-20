@@ -78,7 +78,9 @@ func TestParseCallbackInput(t *testing.T) {
 }
 
 func TestExchangeCode_HappyPath(t *testing.T) {
-	t.Parallel()
+	// Intentionally serial: mutates the package-global TokenURL.
+	// t.Parallel with TestRefresh_HappyPath + TestExchangeCode_ServerError
+	// raced and flaked ~80% of runs before this change.
 	s, _ := NewSession()
 	mockCode := "testcode"
 
@@ -133,7 +135,7 @@ func TestExchangeCode_StateMismatch(t *testing.T) {
 }
 
 func TestRefresh_HappyPath(t *testing.T) {
-	t.Parallel()
+	// Serial — mutates package-global TokenURL.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -160,7 +162,7 @@ func TestRefresh_HappyPath(t *testing.T) {
 }
 
 func TestExchangeCode_ServerError(t *testing.T) {
-	t.Parallel()
+	// Serial — mutates package-global TokenURL.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(400)
 		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))

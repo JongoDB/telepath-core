@@ -59,6 +59,10 @@ func main() {
 		addToGroup(newOAuthCmd(), "setup"),
 		addToGroup(newDoctorCmd(), "setup"),
 		addToGroup(newVerifyConfigCmd(), "setup"),
+		// start + stop are the recommended happy-path verbs; daemon +
+		// dashboard stay registered below for granular control.
+		addToGroup(newStartCmd(), "ops"),
+		addToGroup(newStopCmd(), "ops"),
 		addToGroup(newDaemonCmd(), "ops"),
 		addToGroup(newDashboardCmd(), "ops"),
 		addToGroup(newEngagementCmd(), "ops"),
