@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fsc/telepath-core/internal/daemon"
 	"github.com/fsc/telepath-core/internal/dashboard"
 )
 
@@ -48,8 +49,9 @@ Ctrl+C stops the dashboard; the daemon continues running.`,
 				Timeout:    3 * time.Second,
 			}
 			srv, err := dashboard.Start(dashboard.Config{
-				BindAddr: bindAddr,
-				Fetcher:  fetcher,
+				BindAddr:   bindAddr,
+				Fetcher:    fetcher,
+				CLIVersion: daemon.Version,
 			})
 			if err != nil {
 				return fmt.Errorf("dashboard: %w", err)

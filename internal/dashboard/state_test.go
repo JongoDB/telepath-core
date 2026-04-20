@@ -46,7 +46,7 @@ func TestAggregate_DaemonUnreachable_ReturnsEarlyWithWarning(t *testing.T) {
 	f := &fakeFetcher{
 		errors: map[string]error{schema.MethodPing: errors.New("dial unix: no such file")},
 	}
-	s := Aggregate(f)
+	s := Aggregate(f, "")
 	if s.Daemon != nil {
 		t.Errorf("daemon should be nil when ping fails: %+v", s.Daemon)
 	}
@@ -72,7 +72,7 @@ func TestAggregate_DaemonAlivePopulatesVersion(t *testing.T) {
 			schema.MethodOAuthStatus:     rawJSON(schema.OAuthStatusResult{OK: true, Connections: []schema.OAuthConnection{}}),
 		},
 	}
-	s := Aggregate(f)
+	s := Aggregate(f, "")
 	if s.Daemon == nil || s.Daemon.Version != "0.1.22" {
 		t.Errorf("daemon = %+v", s.Daemon)
 	}
@@ -119,7 +119,7 @@ func TestAggregate_ActiveEngagement_PopulatesCountsAndRecents(t *testing.T) {
 			schema.MethodEvidenceSearch:  rawJSON(schema.EvidenceSearchResult{OK: true, Items: []schema.EvidenceSummary{{EvidenceID: "x"}, {EvidenceID: "y"}}}),
 		},
 	}
-	s := Aggregate(f)
+	s := Aggregate(f, "")
 	if s.ActiveEngagement == nil || s.ActiveEngagement.ID != "acme-01" {
 		t.Errorf("engagement = %+v", s.ActiveEngagement)
 	}
@@ -155,7 +155,7 @@ func TestAggregate_ExpiredOAuth_SurfacesAsWarning(t *testing.T) {
 			}}),
 		},
 	}
-	s := Aggregate(f)
+	s := Aggregate(f, "")
 	if len(s.OAuth) != 2 {
 		t.Fatalf("expected 2 connections: %+v", s.OAuth)
 	}
@@ -167,6 +167,72 @@ func TestAggregate_ExpiredOAuth_SurfacesAsWarning(t *testing.T) {
 	}
 	if !foundExpired {
 		t.Errorf("expected expired-oauth warning in %v", s.Warnings)
+	}
+}
+
+func TestAggregate_VersionMismatch_EmitsWarning(t *testing.T) {
+	t.Parallel()
+	// CLIVersion = 0.1.26, daemon reports 0.1.20 → the operator ran
+	// telepath update but didn't restart the daemon. The warning
+	// tells them exactly what to do.
+	f := &fakeFetcher{
+		responses: map[string]json.RawMessage{
+			schema.MethodPing:            rawJSON(schema.PingResult{OK: true, Version: "0.1.20"}),
+			schema.MethodEngagementGet:   rawJSON(schema.EngagementGetResult{OK: true}),
+			schema.MethodTransportStatus: rawJSON(schema.TransportStatusResult{OK: true, Status: schema.TransportStatus{State: "down"}}),
+			schema.MethodOAuthStatus:     rawJSON(schema.OAuthStatusResult{OK: true}),
+		},
+	}
+	s := Aggregate(f, "0.1.26")
+	if s.CLIVersion != "0.1.26" {
+		t.Errorf("CLIVersion = %q", s.CLIVersion)
+	}
+	found := false
+	for _, w := range s.Warnings {
+		if strings.Contains(w, "0.1.20") && strings.Contains(w, "0.1.26") && strings.Contains(w, "daemon stop") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected mismatch warning with both versions + restart hint, got: %v", s.Warnings)
+	}
+}
+
+func TestAggregate_VersionMatch_NoWarning(t *testing.T) {
+	t.Parallel()
+	f := &fakeFetcher{
+		responses: map[string]json.RawMessage{
+			schema.MethodPing:            rawJSON(schema.PingResult{OK: true, Version: "0.1.26"}),
+			schema.MethodEngagementGet:   rawJSON(schema.EngagementGetResult{OK: true}),
+			schema.MethodTransportStatus: rawJSON(schema.TransportStatusResult{OK: true, Status: schema.TransportStatus{State: "down"}}),
+			schema.MethodOAuthStatus:     rawJSON(schema.OAuthStatusResult{OK: true}),
+		},
+	}
+	s := Aggregate(f, "0.1.26")
+	for _, w := range s.Warnings {
+		if strings.Contains(w, "older build") {
+			t.Errorf("version-match run should not warn: %v", s.Warnings)
+		}
+	}
+}
+
+func TestAggregate_EmptyCLIVersion_SkipsMismatchCheck(t *testing.T) {
+	t.Parallel()
+	// CLIVersion="" (SDK embed without a version) should not warn
+	// regardless of what the daemon reports.
+	f := &fakeFetcher{
+		responses: map[string]json.RawMessage{
+			schema.MethodPing:            rawJSON(schema.PingResult{OK: true, Version: "anything"}),
+			schema.MethodEngagementGet:   rawJSON(schema.EngagementGetResult{OK: true}),
+			schema.MethodTransportStatus: rawJSON(schema.TransportStatusResult{OK: true, Status: schema.TransportStatus{State: "down"}}),
+			schema.MethodOAuthStatus:     rawJSON(schema.OAuthStatusResult{OK: true}),
+		},
+	}
+	s := Aggregate(f, "")
+	for _, w := range s.Warnings {
+		if strings.Contains(w, "older build") {
+			t.Errorf("empty CLIVersion should not warn: %v", s.Warnings)
+		}
 	}
 }
 
@@ -184,7 +250,7 @@ func TestAggregate_EmptySlicesAreArraysNotNull(t *testing.T) {
 			schema.MethodOAuthStatus:     rawJSON(schema.OAuthStatusResult{OK: true}),
 		},
 	}
-	s := Aggregate(f)
+	s := Aggregate(f, "")
 	raw, _ := json.Marshal(s)
 	out := string(raw)
 	for _, want := range []string{`"oauth":[]`, `"recent_findings":[]`, `"recent_notes":[]`, `"warnings":[]`} {
@@ -204,7 +270,7 @@ func TestAggregate_NoActiveEngagement_SkipsListRPCs(t *testing.T) {
 			schema.MethodOAuthStatus:     rawJSON(schema.OAuthStatusResult{OK: true}),
 		},
 	}
-	s := Aggregate(f)
+	s := Aggregate(f, "")
 	if s.FindingsCount != 0 || s.NotesCount != 0 || s.EvidenceCount != 0 {
 		t.Errorf("counts should be zero: %+v", s)
 	}

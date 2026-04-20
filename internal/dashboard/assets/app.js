@@ -208,8 +208,15 @@ function renderOAuth(card, conns) {
   setContent(card, cardTitle("oauth"), ul);
 }
 
+// NOTE on re-render: each render* function replaces its card's children
+// via setContent(). That invalidates any element refs the static
+// index.html embedded (e.g., span#count-foo). Render functions MUST
+// stay self-contained — build the card's full subtree via cardTitle()
+// + setContent() and never reach back to the card's original children
+// by id. A previous version assigned .textContent to the static count
+// spans, which null-deref'd on the second poll and killed the render
+// loop. Regression-guarded by handler_test.go.
 function renderFindings(card, count, recent) {
-  byId("count-findings").textContent = String(count || 0);
   const title = cardTitle("findings", count || 0);
   if (!recent || recent.length === 0) {
     setContent(card, title, el("div", { class: "muted", text: "no findings recorded yet" }));
@@ -228,7 +235,6 @@ function renderFindings(card, count, recent) {
 }
 
 function renderNotes(card, count, recent) {
-  byId("count-notes").textContent = String(count || 0);
   const title = cardTitle("notes", count || 0);
   if (!recent || recent.length === 0) {
     setContent(card, title, el("div", { class: "muted", text: "no notes recorded yet" }));
@@ -246,7 +252,6 @@ function renderNotes(card, count, recent) {
 }
 
 function renderEvidence(card, count) {
-  byId("count-evidence").textContent = String(count || 0);
   setContent(card,
     cardTitle("evidence", count || 0),
     el("div", { class: "muted", text: "content-addressed blobs in the engagement vault" })

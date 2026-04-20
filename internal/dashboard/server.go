@@ -45,6 +45,11 @@ type Config struct {
 	BindAddr string
 	// Fetcher is the backend RPC client. Required.
 	Fetcher Fetcher
+	// CLIVersion is the version of the telepath binary running the
+	// dashboard. Used to detect + warn about stale daemons (daemon
+	// built from an older binary that hasn't been restarted after an
+	// update). Zero-value disables the check.
+	CLIVersion string
 	// DisableAuth bypasses the bearer-token requirement. Test-only —
 	// do NOT set this in production code paths. The field exists so
 	// handler/state tests that use httptest.NewRequest don't have to
@@ -74,7 +79,7 @@ func Start(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("dashboard: token: %w", err)
 		}
 	}
-	h := &Handler{Fetcher: cfg.Fetcher, Token: token}
+	h := &Handler{Fetcher: cfg.Fetcher, Token: token, CLIVersion: cfg.CLIVersion}
 	srv := &http.Server{
 		Handler:           h,
 		ReadHeaderTimeout: 5 * time.Second,

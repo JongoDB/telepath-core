@@ -13,6 +13,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"time"
 
@@ -53,6 +54,13 @@ type State struct {
 	// dashboard renders it in the header so operators know the page is
 	// live vs. stale.
 	GeneratedAt string `json:"generated_at"`
+
+	// CLIVersion is the version baked into the `telepath` binary that's
+	// running the dashboard. Surfaced so a stale-daemon situation (an
+	// operator ran `telepath update` but didn't restart the daemon)
+	// produces an actionable warning rather than silently showing old
+	// values. Compared against Daemon.Version during Aggregate.
+	CLIVersion string `json:"cli_version,omitempty"`
 
 	// Daemon carries identity + liveness info. Null when the daemon
 	// RPC was unreachable — UI renders a "daemon down" banner.
@@ -106,28 +114,39 @@ const recentLimit = 5
 // whole refresh, so the browser sees partial state even when the
 // daemon is mid-restart or a single subsystem is flaky.
 //
+// cliVersion is the version of the telepath binary running the
+// dashboard — compared against the daemon's reported version to
+// surface stale-daemon situations. Empty cliVersion skips the check
+// (useful for tests that don't care).
+//
 // All slice fields are initialized to non-nil empty slices so the
 // JSON wire shape is always arrays (never null). The frontend relies
 // on that for zero-special-case rendering.
-func Aggregate(f Fetcher) State {
+func Aggregate(f Fetcher, cliVersion string) State {
 	s := State{
 		GeneratedAt:    time.Now().UTC().Format(time.RFC3339),
+		CLIVersion:     cliVersion,
 		OAuth:          []schema.OAuthConnection{},
 		RecentFindings: []schema.Finding{},
 		RecentNotes:    []schema.Note{},
 		Warnings:       []string{},
 	}
 
-	// ping → daemon version + PID from the caller's pid file if
-	// available. We don't hit the pidfile from here (dashboard isn't
-	// necessarily on the same host as the daemon in v0.x, though v0.1
-	// is local-only). Version comes from the ping response.
+	// ping → daemon version + socket path. Socket comes from the
+	// TELEPATH_SOCKET env var (set by the CLI) when available —
+	// operators running the dashboard from the `telepath` CLI see it,
+	// headless SDK embeddings see empty (which the UI hides).
 	if raw, err := f.Call(schema.MethodPing, nil); err == nil {
 		var p schema.PingResult
 		if json.Unmarshal(raw, &p) == nil && p.OK {
 			s.Daemon = &DaemonInfo{Version: p.Version}
-			if os.Getenv("TELEPATH_SOCKET") != "" {
-				s.Daemon.Socket = os.Getenv("TELEPATH_SOCKET")
+			if v := os.Getenv("TELEPATH_SOCKET"); v != "" {
+				s.Daemon.Socket = v
+			}
+			if cliVersion != "" && p.Version != "" && cliVersion != p.Version {
+				s.Warnings = append(s.Warnings, fmt.Sprintf(
+					"daemon is running an older build (%s) than this CLI (%s); restart with `telepath daemon stop && telepath daemon run`",
+					p.Version, cliVersion))
 			}
 		}
 	} else {

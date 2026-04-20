@@ -41,9 +41,12 @@ func (h *Handler) staticHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", ctype)
-	// Short cache so browser reloads pick up new builds during
-	// operator debugging; real caches happen at the CDN layer in v0.4+.
-	w.Header().Set("Cache-Control", "public, max-age=30")
+	// No cache: the dashboard is short-lived (rotates on every
+	// `telepath dashboard` restart), and operators who `telepath
+	// update` and reload must not be served stale JS from a 30s
+	// browser cache — that made a recent JS fix look unshipped.
+	// Dashboard traffic is trivially small; revalidation is fine.
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(data)
 }
 

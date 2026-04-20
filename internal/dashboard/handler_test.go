@@ -244,6 +244,14 @@ func TestHandler_StaticAssets_JS(t *testing.T) {
 	if strings.Contains(body, ".innerHTML") {
 		t.Errorf("app.js uses innerHTML — XSS risk; use el() + setContent() instead")
 	}
+	// Regression guard: render functions replace the whole card via
+	// setContent(), which invalidates any refs embedded in the static
+	// HTML (#count-findings / #count-notes / #count-evidence). Reading
+	// them back with byId on the second poll crashed the render loop
+	// and stuck the page on stale state. Pin that we don't do it.
+	if strings.Contains(body, `byId("count-`) {
+		t.Errorf("app.js reads a #count-... element inside a re-rendered card — will null-deref on the second poll")
+	}
 }
 
 // --- Bearer token / cookie auth --------------------------------------

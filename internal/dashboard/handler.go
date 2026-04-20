@@ -19,9 +19,14 @@ const cookieName = "telepath_dash"
 // three ways: `?t=<token>` query param (bootstraps the cookie on the
 // first hit), `Cookie: telepath_dash=<token>`, or
 // `Authorization: Bearer <token>` header for scripted clients.
+//
+// CLIVersion is the version of the telepath binary running the
+// dashboard. Passed to Aggregate so a daemon-vs-CLI mismatch surfaces
+// as an actionable warning.
 type Handler struct {
-	Fetcher Fetcher
-	Token   string
+	Fetcher    Fetcher
+	Token      string
+	CLIVersion string
 }
 
 // ServeHTTP routes the small number of dashboard endpoints. Keeps paths
@@ -104,7 +109,7 @@ func (h *Handler) apiState(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
 	}
-	s := Aggregate(h.Fetcher)
+	s := Aggregate(h.Fetcher, h.CLIVersion)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	// Cache-Control: no-store makes Firefox / Safari / Chrome treat
 	// the polling response as fresh on every hit. Without it, some
